@@ -39,15 +39,30 @@ Frontend          React + deck.gl H3HexagonLayer + MapLibre
 - **AI:** Anthropic Claude with tool-use
 - **Data:** Foursquare Open Source Places — 233K Sydney POIs
 
-## Run
+## Run locally
 
 ```bash
-# Backend
-source .venv/bin/activate
-uvicorn backend.app.main:app --reload --port 8000
+# 1. Python 3.12 env (DuckDB has no wheels for 3.15 yet)
+uv venv --python 3.12 .venv && uv pip install --python .venv/bin/python -r requirements.txt
 
-# Frontend
-cd frontend && npm run dev
+# 2. Data: real Foursquare data if HF_TOKEN is in .env, else synthetic demo data
+cp .env.example .env
+.venv/bin/python scripts/prepare_sydney.py
+
+# 3. Backend (http://127.0.0.1:8000)
+.venv/bin/uvicorn backend.app.main:app --reload --port 8000
+
+# 4. Frontend (separate terminal): landing at /, app at /app
+cd frontend && npm install && npm run dev
 ```
 
-Add `ANTHROPIC_API_KEY` to a `.env` file in the repo root.
+Tests: `.venv/bin/python -m pytest backend/tests -q`
+
+## Accounts and security
+
+- Argon2id password hashes; opaque server-side sessions in httpOnly, SameSite=Lax cookies (only a SHA-256 of each token is stored)
+- CSRF guard (`X-Requested-With: branchwise` on every write), CORS limited to `ALLOWED_ORIGINS`, rate-limited login and sign-up
+- Every brand, store and shortlist route is scoped to the signed-in user; account deletion removes everything
+- SQLite by default (`data/app.db`); set `DATABASE_URL` to Postgres for production
+
+The LLM assistant is off (`ASSISTANT_ENABLED=false`); scores, reasons and site summaries are deterministic.
