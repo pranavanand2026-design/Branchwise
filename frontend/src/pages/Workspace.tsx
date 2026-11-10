@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { NavLink, useNavigate } from "react-router-dom";
-import { Bookmark, ChevronLeft, ChevronRight, Columns3, Layers, ListOrdered, Map as MapIcon, MessageCircle, Sparkles, X } from "lucide-react";
+import { Bookmark, ChevronLeft, ChevronRight, Columns3, Layers, ListOrdered, Map as MapIcon, Sparkles, X } from "lucide-react";
 import { api, priParam } from "../lib/api";
+import { applyAiFilter } from "../lib/scenario";
 import { useSession } from "../lib/session";
 import { useWorkspace, type Layer } from "../lib/store";
 import { MapView } from "../components/MapView";
@@ -72,7 +73,7 @@ export function Workspace({ view }: { view: View }) {
   const tourSteps: TourStep[] = [
     {
       target: "ranked",
-      title: "Your best areas",
+      title: "Your top picks",
       body: `The ten parts of Sydney that suit ${brand?.name} best, with the main reason for each. Tap one to see more.`,
       before: () => { ws.set({ selectedHex: null, panelOpen: true }); setMobileView("panel"); },
     },
@@ -93,8 +94,8 @@ export function Workspace({ view }: { view: View }) {
     },
     {
       target: "nav-assistant",
-      title: "Ask the assistant",
-      body: "Describe your customers in plain words. The assistant re-weights the map, looks up places and recommends areas.",
+      title: "Meet Branchwise AI",
+      body: "Describe your customers and Branchwise AI re-weights the map, checks competitors and recommends areas.",
       before: () => ws.set({ selectedHex: null }),
     },
     {
@@ -133,7 +134,7 @@ export function Workspace({ view }: { view: View }) {
           <nav className="flex items-center gap-1 sm:ml-6" aria-label="Workspace">
             {tab("/", "Map", <MapIcon size={17} aria-hidden="true" />, "nav-map")}
             {tab("/shortlist", "Shortlist", <Bookmark size={17} aria-hidden="true" />, "nav-shortlist", ws.shortlist.length)}
-            {tab("/assistant", "Assistant", <MessageCircle size={17} aria-hidden="true" />, "nav-assistant")}
+            {tab("/assistant", "Branchwise AI", <Sparkles size={17} aria-hidden="true" />, "nav-assistant")}
           </nav>
           <div className="ml-auto flex items-center gap-3">
             <DataBadge />
@@ -155,7 +156,7 @@ export function Workspace({ view }: { view: View }) {
               w-full md:transition-[width,opacity] md:duration-300
               ${view === "assistant" ? "md:w-[440px]" : ws.panelOpen ? "md:w-[380px]" : "md:w-0 md:opacity-0 md:border-0 md:-mr-3"}
               ${mobileView === "panel" ? "block" : "hidden"} md:block`}
-            aria-label={view === "assistant" ? "Assistant" : "Best areas"}
+            aria-label={view === "assistant" ? "Branchwise AI" : "Top picks"}
           >
             <div className={`h-full w-full ${view === "assistant" ? "md:w-[440px]" : "md:w-[380px]"}`}>
               {view === "assistant" ? <ChatPanel onOpenSite={openSite} /> : <SitePanel onOpenSite={openSite} />}
@@ -164,7 +165,7 @@ export function Workspace({ view }: { view: View }) {
               <button
                 onClick={() => { ws.set({ panelOpen: false }); setTimeout(() => window.dispatchEvent(new Event("resize")), 320); }}
                 className="hidden md:grid absolute top-4 right-4 w-8 h-8 place-items-center rounded-full text-fg-tertiary hover:bg-bg-elevated hover:text-fg-primary"
-                aria-label="Hide best areas"
+                aria-label="Hide top picks"
                 aria-controls="side-panel"
               >
                 <ChevronLeft size={18} />
@@ -186,7 +187,7 @@ export function Workspace({ view }: { view: View }) {
                 className="hidden md:inline-flex absolute top-3 left-3 z-20 h-10 items-center gap-1.5 pl-2.5 pr-4 rounded-full bg-white border border-bg-border shadow-panel text-sm font-medium"
                 aria-controls="side-panel"
               >
-                <ChevronRight size={18} aria-hidden="true" /> Best areas
+                <ChevronRight size={18} aria-hidden="true" /> Top picks
               </button>
             )}
             <ScenarioBanner />
@@ -213,7 +214,7 @@ export function Workspace({ view }: { view: View }) {
                 className={`h-10 px-4 rounded-full text-sm font-medium inline-flex items-center gap-2 ${mobileView === v ? "bg-fg-primary text-white" : "text-fg-secondary"}`}
               >
                 {v === "panel" ? <ListOrdered size={16} aria-hidden="true" /> : <MapIcon size={16} aria-hidden="true" />}
-                {v === "panel" ? (view === "assistant" ? "Chat" : "List") : "Map"}
+                {v === "panel" ? (view === "assistant" ? "AI" : "Top picks") : "Map"}
               </button>
             ))}
           </div>
@@ -226,40 +227,26 @@ export function Workspace({ view }: { view: View }) {
   );
 }
 
-/** Shown while the assistant's what-if is on the map. */
+/** Shown while Branchwise AI's suggested filter is on the map. */
 function ScenarioBanner() {
   const { scenario, set } = useWorkspace();
-  const { brand, setBrand } = useSession();
   const [busy, setBusy] = useState(false);
-  if (!scenario || !brand) return null;
-
-  async function save() {
-    if (!brand || !scenario) return;
-    setBusy(true);
-    try {
-      const b = await api.saveBrand({
-        name: brand.name, vertical: brand.vertical, description: brand.description,
-        store_format: brand.store_format, store_count_band: brand.store_count_band,
-        priorities: scenario.priorities ?? brand.priorities, regions: scenario.regions ?? brand.regions, onboarded: true,
-      });
-      setBrand(b);
-      set({ scenario: null, rankedRegions: null });
-    } finally {
-      setBusy(false);
-    }
-  }
-
+  if (!scenario) return null;
   return (
     <div className="absolute top-3 left-1/2 -translate-x-1/2 z-20 max-w-[calc(100%-24px)] flex items-center gap-3 h-11 pl-4 pr-1.5 rounded-full bg-white border border-accent-blue/40 shadow-panel">
       <Sparkles size={16} className="text-accent-link shrink-0" aria-hidden="true" />
       <span className="text-sm truncate">
-        <span className="text-fg-tertiary">Assistant's view: </span>
+        <span className="text-fg-tertiary">AI suggested filter: </span>
         <span className="font-medium">{scenario.label || "custom priorities"}</span>
       </span>
-      <button className="btn-secondary btn-sm h-8 shrink-0" onClick={() => void save()} disabled={busy}>
-        {busy && <Spinner />} Save to my profile
+      <button
+        className="btn-sm btn h-8 shrink-0 bg-brand-navy text-white hover:bg-accent-hover"
+        disabled={busy}
+        onClick={async () => { setBusy(true); try { await applyAiFilter(); } finally { setBusy(false); } }}
+      >
+        {busy && <Spinner />} Apply AI suggested filter
       </button>
-      <button className="w-8 h-8 shrink-0 grid place-items-center rounded-full text-fg-tertiary hover:bg-bg-elevated" onClick={() => set({ scenario: null, places: [] })} aria-label="Reset to my saved priorities">
+      <button className="w-8 h-8 shrink-0 grid place-items-center rounded-full text-fg-tertiary hover:bg-bg-elevated" onClick={() => set({ scenario: null, places: [] })} aria-label="Dismiss the AI suggested filter">
         <X size={16} />
       </button>
     </div>

@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState } from "react";
-import { Bookmark, Check, ChevronDown } from "lucide-react";
+import { useEffect, useState } from "react";
+import { Bookmark } from "lucide-react";
 import { api, priParam, type RankedSite } from "../lib/api";
 import { scoreFill, scoreHex, scoreLabel } from "../lib/colors";
 import { useSession } from "../lib/session";
@@ -19,69 +19,6 @@ export function ScoreBadge({ score, size = "md" }: { score: number; size?: "md" 
         <span className="sr-only"> out of 100, {scoreLabel(score)}</span>
       </span>
     </span>
-  );
-}
-
-/** Compact areas filter: one button, a short checklist in a popover. */
-export function AreasDropdown({ value, onChange }: { value: string[]; onChange: (v: string[]) => void }) {
-  const meta = useSession((s) => s.meta);
-  const [open, setOpen] = useState(false);
-  const ref = useRef<HTMLDivElement>(null);
-  const regions = meta?.regions ?? [];
-  const label =
-    value.length === 0 ? "All of Sydney"
-      : value.length === 1 ? regions.find((r) => r.key === value[0])?.label ?? "1 area"
-        : `${value.length} areas`;
-
-  useEffect(() => {
-    if (!open) return;
-    const close = (e: MouseEvent) => !ref.current?.contains(e.target as Node) && setOpen(false);
-    const esc = (e: KeyboardEvent) => e.key === "Escape" && setOpen(false);
-    document.addEventListener("mousedown", close);
-    document.addEventListener("keydown", esc);
-    return () => { document.removeEventListener("mousedown", close); document.removeEventListener("keydown", esc); };
-  }, [open]);
-
-  return (
-    <div className="relative" ref={ref}>
-      <button
-        onClick={() => setOpen((o) => !o)}
-        aria-expanded={open}
-        aria-haspopup="listbox"
-        className="inline-flex items-center gap-1.5 h-8 pl-3 pr-2 rounded-full border border-bg-border bg-white text-sm font-medium hover:border-[rgba(36,60,76,0.32)]"
-      >
-        {label} <ChevronDown size={15} className={`transition-transform ${open ? "rotate-180" : ""}`} aria-hidden="true" />
-      </button>
-      {open && (
-        <div className="absolute left-0 top-10 z-30 w-64 bg-white rounded-md border border-bg-border shadow-pop py-1.5" role="listbox" aria-multiselectable="true">
-          <button
-            role="option"
-            aria-selected={value.length === 0}
-            onClick={() => onChange([])}
-            className="w-full flex items-center justify-between px-3.5 h-10 text-[15px] hover:bg-bg-base"
-          >
-            All of Sydney {value.length === 0 && <Check size={16} className="text-accent-link" aria-hidden="true" />}
-          </button>
-          <div className="my-1 border-t border-bg-border" />
-          <div className="max-h-64 overflow-y-auto">
-            {regions.map((r) => {
-              const on = value.includes(r.key);
-              return (
-                <button
-                  key={r.key}
-                  role="option"
-                  aria-selected={on}
-                  onClick={() => onChange(on ? value.filter((x) => x !== r.key) : [...value, r.key])}
-                  className="w-full flex items-center justify-between px-3.5 h-10 text-[15px] text-left hover:bg-bg-base"
-                >
-                  {r.label} {on && <Check size={16} className="text-accent-link" aria-hidden="true" />}
-                </button>
-              );
-            })}
-          </div>
-        </div>
-      )}
-    </div>
   );
 }
 
@@ -110,15 +47,11 @@ export function SitePanel({ onOpenSite }: { onOpenSite: (h3: string, lat: number
 
   return (
     <div className="h-full flex flex-col">
-      <div className="px-5 pt-5 pb-4 border-b border-bg-border">
-        <h2 className="text-[22px] leading-tight">Best areas</h2>
-        <div className="mt-3 flex items-center gap-2">
-          <AreasDropdown
-            value={activeRegions}
-            onChange={(r) => set(scenario ? { scenario: { ...scenario, regions: r } } : { rankedRegions: r })}
-          />
-          <span className="text-sm text-fg-tertiary truncate">Top 10 for {brand.name}</span>
-        </div>
+      <div className="px-5 h-16 shrink-0 border-b border-bg-border flex flex-col justify-center pr-14">
+        <h2 className="text-[17px] leading-tight">Top picks</h2>
+        <p className="text-[13px] text-fg-tertiary leading-tight truncate">
+          {scenario ? "Using the AI suggested filter" : `Best 10 areas for ${brand.name}`}
+        </p>
       </div>
 
       <div className="flex-1 overflow-y-auto">

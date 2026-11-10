@@ -103,8 +103,36 @@ def resolve_model() -> str | None:
             log.warning("Groq model list failed: %s", e)
             return _model_cache["model"] or PREFERRED_MODELS[0]
         model = next((m for m in PREFERRED_MODELS if m in available), None)
-        _model_cache.update(model=model, checked=time.time())
+        _model_cache.update(model=model, checked=time.time(),
+                            fallbacks=[m for m in PREFERRED_MODELS if m in available and m != model])
         return model
+
+
+def fallback_models() -> list[str]:
+    resolve_model()
+    return list(_model_cache.get("fallbacks") or [])
+
+
+def _create(client, model: str, **kw):
+    """One completion with free-tier care: wait out short rate limits, switch model on long ones."""
+    from openai import RateLimitError
+
+    models = [model] + [m for m in fallback_models() if m != model]
+    last: Exception | None = None
+    for m in models[:3]:
+        for attempt in range(2):
+            try:
+                extra = {"extra_body": {"reasoning_effort": "low"}} if "gpt-oss" in m else {}
+                return client.chat.completions.create(model=m, **kw, **extra), m
+            except RateLimitError as e:
+                last = e
+                wait = re.search(r"try again in ([\d.]+)s", str(e))
+                secs = float(wait.group(1)) if wait else 99
+                if secs <= 6 and attempt == 0:
+                    time.sleep(secs + 0.3)
+                    continue
+                break  # long wait: try the next model
+    raise last if last else RuntimeError("No model answered.")
 
 
 def provider_status() -> dict:
@@ -188,6 +216,17 @@ def _tool_schema() -> list[dict]:
             }, "required": ["suburb"]},
         }},
         {"type": "function", "function": {
+            "name": "nearby_mix",
+            "description": "Break down what surrounds one area: direct competitors within 500 m (names, types, distances), "
+                           "complementary venues within 300 m that share customers (cafes, dessert, gyms...), anchors within 1 km "
+                           "that draw crowds (unis, malls, offices, hospitals, stations) and transit. Use it to judge demand vs "
+                           "competition before recommending, or when the user asks what's around an area.",
+            "parameters": {"type": "object", "properties": {
+                "suburb": {"type": "string", "maxLength": 60},
+                "h3_id": {"type": "string"},
+            }},
+        }},
+        {"type": "function", "function": {
             "name": "save_to_shortlist",
             "description": "Save an area to the user's shortlist. Only when the user asks to save or shortlist it. "
                            "Use the h3_id returned by find_best_areas or area_report.",
@@ -199,10 +238,15 @@ def _tool_schema() -> list[dict]:
     ]
 
 
+def _for_model(brief: dict) -> dict:
+    return {k: v for k, v in brief.items() if k not in ("lat", "lng")}
+
+
 def _site_brief(s: dict) -> dict:
     return {"h3_id": s["h3_id"], "suburb": s["locality"], "score": s["score"],
             "lat": round(s["lat"], 5), "lng": round(s["lng"], 5),
-            "reasons": s.get("reasons", [])[:2], "risks": s.get("risks", [])[:2]}
+            "reasons": s.get("reasons", [])[:2], "risks": s.get("risks", [])[:2],
+            "signals": s.get("signals", {})}
 
 
 def t_set_priorities(turn: Turn, top: list[str]) -> dict:
@@ -229,7 +273,7 @@ def t_find_best_areas(turn: Turn, limit: int = 5) -> dict:
     sites = rank_sites(turn.profile(), limit=limit, region_keys=tuple(turn.effective_regions()))
     briefs = [_site_brief(s) for s in sites]
     turn.actions.append({"type": "sites", "sites": briefs})
-    return {"areas": briefs}
+    return {"areas": [_for_model(b) for b in briefs]}
 
 
 def t_search_places(turn: Turn, query: str, region: str | None = None, limit: int = 8, suburb: str | None = None) -> dict:
@@ -303,7 +347,66 @@ def t_save_to_shortlist(turn: Turn, h3_id: str, note: str | None = None) -> dict
     return {"ok": True, "saved": site.locality}
 
 
+def _cell_for(turn: Turn, suburb: str | None, h3_id: str | None):
+    prof = turn.profile()
+    scores = score_profile(prof)
+    if h3_id and h3.is_valid_cell(h3_id):
+        hit = next((h for h in scores if h.h3_id == h3_id), None)
+        if hit:
+            return prof, hit
+    name = (suburb or "").strip().lower()
+    if not name:
+        return prof, None
+    cands = [h for h in scores if h.locality and h.locality.lower() == name] or \
+            [h for h in scores if h.locality and name in h.locality.lower()]
+    return prof, (max(cands, key=lambda h: h.score) if cands else None)
+
+
+def t_nearby_mix(turn: Turn, suburb: str | None = None, h3_id: str | None = None) -> dict:
+    """What surrounds one area: competitors, complementary venues, anchors, transit."""
+    prof, hit = _cell_for(turn, suburb, h3_id)
+    if hit is None:
+        return {"error": f"No scored zones found for '{suburb or h3_id}'."}
+    rep = hex_report(prof, hit.h3_id)
+    from .scoring import _category_tag_cte, _haversine_sql
+    dist = _haversine_sql(repr(float(hit.lat)), repr(float(hit.lng)), "latitude", "longitude")
+    box = 0.012
+    mix = get_con().execute(
+        f"""
+        WITH {_category_tag_cte(prof.vertical)}
+        SELECT kind, primary_category, COUNT(*) AS n FROM (
+          SELECT CASE WHEN is_competitor THEN 'competitor' WHEN is_complementary THEN 'complementary'
+                      WHEN is_anchor THEN 'anchor' END AS kind, primary_category, {dist} AS d
+          FROM tagged
+          WHERE (is_competitor OR is_complementary OR is_anchor)
+            AND latitude BETWEEN ? AND ? AND longitude BETWEEN ? AND ?
+        ) WHERE (kind = 'competitor' AND d <= 500) OR (kind = 'complementary' AND d <= 300) OR (kind = 'anchor' AND d <= 1000)
+        GROUP BY 1, 2 ORDER BY 1, 3 DESC
+        """,
+        [hit.lat - box, hit.lat + box, hit.lng - box * 1.2, hit.lng + box * 1.2],
+    ).fetchall()
+    by_kind: dict[str, list[str]] = {}
+    for kind, cat, n in mix:
+        by_kind.setdefault(kind, []).append(f"{cat} x{n}")
+    out = {
+        "suburb": hit.locality, "h3_id": hit.h3_id, "score": rep["score"],
+        "competitors_within_500m": {"count": rep["signals_raw"]["n_competitors"], "by_type": by_kind.get("competitor", [])[:5],
+                                    "closest": [f"{c['name']} ({c['primary_category']}, {c['dist_m']} m)" for c in rep["nearest_competitors"][:4]]},
+        "complementary_within_300m": {"count": rep["signals_raw"]["n_complementary"], "by_type": by_kind.get("complementary", [])[:4],
+                                      "closest": [f"{c['name']} ({c['primary_category']}, {c['dist_m']} m)" for c in rep["nearest_complementary"][:3]]},
+        "anchors_within_1km": {"by_type": by_kind.get("anchor", [])[:4],
+                               "closest": [f"{a['name']} ({a['primary_category']}, {a['dist_m']} m)" for a in rep["nearest_anchors"][:3]]},
+        "transit": [f"{t['name']} ({t['dist_m']} m)" for t in rep["nearest_transit"][:2]],
+        "shops_and_venues_300m": rep["signals_raw"]["n_retail"],
+        "category_mix_0_to_1": rep["diversity_index"],
+    }
+    turn.actions.append({"type": "focus", "h3_id": hit.h3_id, "lat": hit.lat, "lng": hit.lng,
+                         "suburb": hit.locality, "score": rep["score"]})
+    return out
+
+
 TOOLS = {
+    "nearby_mix": t_nearby_mix,
     "set_priorities": t_set_priorities,
     "set_areas": t_set_areas,
     "find_best_areas": t_find_best_areas,
@@ -334,21 +437,29 @@ def _system_prompt(turn: Turn) -> str:
     pri = turn.effective_priorities()
     top = [SIGNAL_SHORT[k] for k in sorted(SIGNALS, key=lambda k: -pri.get(k, 0)) if pri.get(k, 0) >= 3]
     regs = [_regions()[r]["label"] for r in turn.effective_regions() if r in _regions()] or ["All of Sydney"]
-    return f"""You are the Branchwise assistant. You help {b.name}, a {vert} brand ({b.store_format or 'format not set'}, {len(b.stores)} existing stores in Sydney), decide where to open next.
+    return f"""You are Branchwise AI, a site-selection advisor for {b.name}, a {vert} brand ({b.store_format or 'format not set'}, {len(b.stores)} existing stores in Sydney). You help them decide where to open next.
 
-Current what-if: top priorities = {', '.join(top) or 'evenly weighted'}; areas = {', '.join(regs)}.
-Signals: {json.dumps(SIGNAL_TEXT)}.
+Current filter: top priorities = {', '.join(top) or 'evenly weighted'}; areas = {', '.join(regs)}.
 
-How to work:
-- When the user describes their customers, format or goals, call set_priorities (and set_areas if they name places), then find_best_areas.
-- Use area_report to explain one suburb, search_places to look up competitors, anchors or any named place.
-- Only save to the shortlist when the user asks.
-- Words matter: "competitors" are other brands in the same category; "cannibalisation" only means taking customers from the brand's OWN stores.
-- If a search finds nothing, say the data shows none rather than concluding there is no competition; area_report lists the nearest competitors.
-- Every number you mention must come from a tool result. Never invent scores, distances or rents.
-- You cannot see lease listings, rents, demographics or real foot traffic; say so if asked.
+HOW TO WORK
+1. If the user describes customers, format or goals, call set_priorities (and set_areas if they name a part of Sydney) before ranking. Students -> surrounding_amenities; commuters -> transit_accessibility; walk-in or impulse trade -> demographic_match; "avoid competition" -> market_saturation; "away from our stores" -> cannibalisation.
+2. Call find_best_areas (limit 4). Each area already lists its competitors, complementary venues, shops, nearest anchor and transit. Call nearby_mix only on the top pick (or when the user asks about one area) to weigh DEMAND (anchors that bring people, complementary venues that share customers, busy streets) against COMPETITION (direct competitors within 500 m and how close the nearest is).
+3. Judge like an expert: an area with strong anchors and complementary venues but zero competitors is the best case; a cluster of complementary venues usually means proven foot traffic; 3+ direct competitors within 500 m is a real risk even if the score is high; a competitor under 150 m is a red flag. Prefer picks that are spread out over three in one suburb.
+4. Use area_report or nearby_mix when asked about one suburb; search_places to find a named brand or type of place.
+5. Only call save_to_shortlist when the user asks.
 
-Answer style: plain Australian English, short. Lead with the recommendation. 2-5 sentences or a short list of up to 5 suburbs, each with one reason. Mention one trade-off or risk when there is one. No markdown headings."""
+FACTS
+- Every number, name and distance you mention must come from a tool result in this conversation. Never invent scores, rents, foot traffic, demographics or lease availability; say you can't see those if asked.
+- "Competitors" are other brands in the same category. "Cannibalisation" only means taking customers from the brand's OWN stores.
+- If a search finds nothing, say the data shows none; don't conclude there is no competition.
+- Don't describe an area's character (nightlife, vibe, "bar strip") unless a tool result names venues that show it.
+
+ANSWER FORMAT (plain Australian English, under 130 words, no headings, no tables)
+- First line: a one-sentence verdict that names the best area.
+- Then up to 3 picks as a numbered list: **Suburb** (score/100) and one line on why, citing one demand fact and one competition fact.
+- Then one line starting "Watch out:" with the main risk or trade-off.
+- End with one short follow-up offer as a question (e.g. "Want me to check what's around Leichhardt?").
+- Bold only suburb names. No emojis."""
 
 
 def _llm_chat(turn: Turn, history: list[dict]) -> str:
@@ -359,13 +470,13 @@ def _llm_chat(turn: Turn, history: list[dict]) -> str:
     msgs: list[dict] = [{"role": "system", "content": _system_prompt(turn)}] + history
     tools = _tool_schema()
     for _ in range(MAX_TOOL_ROUNDS):
-        resp = client.chat.completions.create(
-            model=model, messages=msgs, tools=tools, tool_choice="auto", temperature=0.2, max_tokens=700,
-        )
+        resp, model = _create(client, model, messages=msgs, tools=tools, tool_choice="auto", temperature=0.2, max_tokens=1800)
         msg = resp.choices[0].message
         calls = msg.tool_calls or []
         if not calls:
-            return (msg.content or "").strip()
+            if (msg.content or "").strip():
+                return msg.content.strip()
+            break  # empty answer: ask once more below, without tools
         msgs.append({"role": "assistant", "content": msg.content or "",
                      "tool_calls": [{"id": c.id, "type": "function",
                                      "function": {"name": c.function.name, "arguments": c.function.arguments}} for c in calls]})
@@ -375,9 +486,11 @@ def _llm_chat(turn: Turn, history: list[dict]) -> str:
             except json.JSONDecodeError:
                 args = {}
             result = _run_tool(turn, c.function.name, args)
-            msgs.append({"role": "tool", "tool_call_id": c.id, "content": json.dumps(result)[:6000]})
+            msgs.append({"role": "tool", "tool_call_id": c.id,
+                         "content": json.dumps(result, separators=(",", ":"), ensure_ascii=False)[:2500]})
     # out of rounds: ask for a final answer without tools
-    resp = client.chat.completions.create(model=model, messages=msgs, temperature=0.2, max_tokens=500)
+    msgs.append({"role": "user", "content": "Now give your answer in the format described, using only the tool results above."})
+    resp, _ = _create(client, model, messages=msgs, temperature=0.2, max_tokens=1500)
     return (resp.choices[0].message.content or "").strip()
 
 
@@ -418,19 +531,29 @@ def _offline_chat(turn: Turn, text: str) -> str:
 
     if top:
         t_set_priorities(turn, top)
-        parts.append("I've re-weighted the map toward " + ", ".join(SIGNAL_SHORT[k].lower() for k in top) + ".")
     if regions:
         t_set_areas(turn, regions)
-    res = t_find_best_areas(turn, 5)
-    areas = res["areas"]
+    areas = t_find_best_areas(turn, 3)["areas"]
     if not areas:
-        return "I couldn't find scored areas there. Try a wider area."
-    lines = [f"{i + 1}. {a['suburb']} ({a['score']}/100): {a['reasons'][0] if a['reasons'] else 'strong all-round fit'}"
-             for i, a in enumerate(areas)]
-    parts.append("Your best areas right now:\n" + "\n".join(lines))
-    if not top:
-        parts.append("Tell me who your customers are (students, commuters, office workers, families) and I'll re-weight the scores.")
-    return "\n\n".join(parts)
+        return "I couldn't find scored areas there. Try a wider part of Sydney."
+
+    def why(a: dict) -> str:
+        sg = a.get("signals", {})
+        demand = (f"{sg['complementary_300m']} complementary venues nearby" if sg.get("complementary_300m")
+                  else a["reasons"][0] if a["reasons"] else "a solid all-round fit")
+        comp = sg.get("competitors_500m", 0)
+        competition = "no direct competitors within 500 m" if comp == 0 else f"{comp} competitor{'s' if comp != 1 else ''} within 500 m"
+        return f"{demand}, {competition}"
+
+    focus = (" for " + ", ".join(SIGNAL_SHORT[k].lower() for k in top)) if top else ""
+    lines = [f"**{areas[0]['suburb']}** looks like your best bet{focus}."]
+    lines += [f"{i + 1}. **{a['suburb']}** ({a['score']}/100): {why(a)}." for i, a in enumerate(areas)]
+    risk = next((r for a in areas for r in a.get("risks", [])), None)
+    if risk:
+        lines.append(f"Watch out: {risk.lower()} in one of these.")
+    lines.append(f"Want me to check what's around {areas[0]['suburb']}?" if top
+                 else "Tell me who your customers are and I'll tailor these picks.")
+    return "\n".join(lines)
 
 
 # ─── Entry point ─────────────────────────────────────────────────────────────

@@ -507,9 +507,22 @@ def rank_sites(profile: Profile, limit: int = 20, region_keys: tuple[str, ...] |
             if len(picked) >= limit:
                 break
     return [
-        {**hex_to_dict(h), "rank": i + 1, **explain(h, profile.weights)}
+        {**hex_to_dict(h), "rank": i + 1, **explain(h, profile.weights), "signals": _signals_brief(h)}
         for i, h in enumerate(picked)
     ]
+
+
+def _signals_brief(h: HexScore) -> dict:
+    r = h.signals_raw
+    rnd = lambda v: round(v) if v is not None else None  # noqa: E731
+    return {
+        "competitors_500m": r["n_competitors"],
+        "complementary_300m": r["n_complementary"],
+        "shops_and_venues_300m": r["n_retail"],
+        "nearest_anchor": r.get("anchor_name"), "anchor_m": rnd(r["d_anchor_m"]),
+        "nearest_transit": r.get("transit_name"), "transit_m": rnd(r["d_transit_m"]),
+        "own_store_m": rnd(r["d_cannibal_m"]),
+    }
 
 
 def hex_to_dict(h: HexScore) -> dict:
