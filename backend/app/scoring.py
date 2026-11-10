@@ -23,7 +23,7 @@ from __future__ import annotations
 import math
 import threading
 from collections import OrderedDict
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 import h3
 
@@ -160,6 +160,19 @@ class _StoreGrid:
 
     def _key(self, lat: float, lng: float) -> tuple[int, int]:
         return (math.floor(lat / self.CELL), math.floor(lng / self.CELL))
+
+    def count_in_poi_data_within(self, lat: float, lng: float, radius_m: float) -> int:
+        """Own stores that are also POIs (picked from the dataset) within radius."""
+        if not self.cells:
+            return 0
+        ky, kx = self._key(lat, lng)
+        n = 0
+        for dy in (-1, 0, 1):
+            for dx in (-1, 0, 1):
+                for s in self.cells.get((ky + dy, kx + dx), ()):
+                    if s.fsq_place_id and haversine_m(lat, lng, s.lat, s.lng) <= radius_m:
+                        n += 1
+        return n
 
     def nearest_m(self, lat: float, lng: float) -> float | None:
         """Nearest store within ~2 km (beyond that cannibalisation is maxed anyway)."""
@@ -363,8 +376,14 @@ def _score_profile_impl(profile: Profile) -> list[HexScore]:
     weights = profile.weights or WEIGHTS
     wsum = sum(weights.get(k, 0.0) for k in SIGNALS) or 1.0
     out: list[HexScore] = []
+    radius = PARAMS["competitor_radius_m"]
     for s in signals:
         d_cannibal = grid.nearest_m(s.lat, s.lng)
+        # The brand's own stores sit in the same category; they are handled by
+        # cannibalisation, so don't also count them as competitors.
+        own_nearby = grid.count_in_poi_data_within(s.lat, s.lng, radius)
+        if own_nearby:
+            s = replace(s, n_competitors=max(0, s.n_competitors - own_nearby))
         comps = _components(s, d_cannibal)
         total = round(sum(comps[k] * weights.get(k, 0.0) for k in SIGNALS) / wsum)
         out.append(HexScore(
@@ -534,7 +553,7 @@ def _site_summary(h: HexScore, competitors: list[dict], anchors: list[dict],
 
     d = raw["d_cannibal_m"]
     if d is None:
-        parts.append("- **Your network:** none of your stores within 2 km.")
+        parts.append("- **Your network:** none of your stores close by.")
     else:
         parts.append(f"- **Your network:** your nearest store is {_fmt_m(d)} away.")
 
@@ -582,7 +601,7 @@ def hex_report(profile: Profile, h3_id: str) -> dict:
         rows = con.execute(
             f"""
             WITH {tagged}
-            SELECT name, primary_category, latitude, longitude, locality, dist_m FROM (
+            SELECT name, primary_category, latitude, longitude, locality, dist_m, fsq_place_id FROM (
               SELECT *, {dist_sql} AS dist_m FROM tagged
               WHERE {flag_col}
                 AND latitude BETWEEN ? AND ? AND longitude BETWEEN ? AND ?
@@ -592,11 +611,16 @@ def hex_report(profile: Profile, h3_id: str) -> dict:
         ).fetchall()
         return [
             {"name": r[0], "primary_category": r[1], "latitude": r[2], "longitude": r[3],
-             "locality": r[4], "dist_m": round(float(r[5]))}
+             "locality": r[4], "dist_m": round(float(r[5])), "fsq_place_id": r[6]}
             for r in rows if r[5] is not None
         ]
 
-    competitors = nearest("is_competitor", 5)
+    own_ids = {st.fsq_place_id for st in profile.stores if st.fsq_place_id}
+    if own_ids:
+        competitors = [c for c in nearest("is_competitor", 5 + len(own_ids))
+                       if c["fsq_place_id"] not in own_ids][:5]
+    else:
+        competitors = nearest("is_competitor", 5)
     complementary = nearest("is_complementary", 5)
     anchors = nearest("is_anchor", 3, max_m=3000)
     transit = nearest("is_transit", 2, max_m=2000)

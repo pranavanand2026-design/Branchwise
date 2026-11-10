@@ -1,113 +1,88 @@
-import { useEffect } from "react";
-import { X } from "lucide-react";
-import { motion, AnimatePresence } from "framer-motion";
-import { useStore } from "../lib/store";
+import { useEffect, useRef, useState } from "react";
+import { motion } from "framer-motion";
+import { AlertTriangle, Check, X } from "lucide-react";
+import { api, SIGNAL_KEYS, type HexReport } from "../lib/api";
+import { fmtDist, scoreHex, scoreLabel } from "../lib/colors";
+import { useWorkspace } from "../lib/store";
 import { ScoreBar } from "./ScoreBar";
-import { scoreHex, scoreLabel } from "../lib/colors";
+import { Spinner } from "./ui";
 
 export function CompareMode() {
-  const { compareOpen, setCompareOpen, pinned, clearPinned } = useStore();
+  const { compareOpen, compareIds, set, toggleCompare } = useWorkspace();
+  const [reports, setReports] = useState<HexReport[] | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const closeRef = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
     if (!compareOpen) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setCompareOpen(false);
-    };
+    closeRef.current?.focus();
+    setReports(null);
+    setErr(null);
+    api.compare(compareIds).then((d) => setReports(d.reports)).catch((e) => setErr((e as Error).message));
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && set({ compareOpen: false });
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [compareOpen, setCompareOpen]);
+  }, [compareOpen, compareIds.join(",")]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  if (!compareOpen || pinned.length < 1) return null;
+  if (!compareOpen) return null;
+  const best = reports ? Math.max(...reports.map((r) => r.score)) : null;
 
   return (
-    <AnimatePresence>
-      <motion.div
-        initial={{ opacity: 0 }}
-        animate={{ opacity: 1 }}
-        exit={{ opacity: 0 }}
-        onClick={(e) => { if (e.target === e.currentTarget) setCompareOpen(false); }}
-        className="absolute inset-0 z-30 bg-gray-900/30 backdrop-blur-sm flex flex-col"
-      >
-        <div className="flex items-center justify-between px-8 py-5 border-b border-bg-border bg-white">
-          <div>
-            <h2 className="font-display text-xl font-bold text-fg-primary tracking-tight">Compare Locations</h2>
-            <p className="text-sm text-fg-tertiary mt-0.5">{pinned.length} location{pinned.length > 1 ? "s" : ""} pinned</p>
-          </div>
-          <button onClick={() => setCompareOpen(false)} className="text-fg-tertiary hover:text-fg-primary transition-colors p-1">
-            <X size={22} />
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      className="fixed inset-0 z-40 bg-[rgba(10,10,10,0.35)] flex"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="compare-title"
+      onClick={(e) => e.target === e.currentTarget && set({ compareOpen: false })}
+    >
+      <div className="m-auto w-[min(1180px,calc(100%-24px))] max-h-[calc(100%-24px)] bg-bg-base rounded-md shadow-pop flex flex-col overflow-hidden">
+        <div className="flex items-center justify-between gap-4 px-6 h-16 border-b border-bg-border bg-white shrink-0">
+          <h2 id="compare-title" className="text-xl font-medium tracking-display">Compare {compareIds.length} sites</h2>
+          <button ref={closeRef} className="w-10 h-10 grid place-items-center rounded-sm hover:bg-bg-elevated" onClick={() => set({ compareOpen: false })} aria-label="Close compare">
+            <X size={20} />
           </button>
         </div>
-
-        <div className="flex-1 overflow-auto p-8 bg-bg-base">
-          <div className="grid gap-5" style={{ gridTemplateColumns: `repeat(${pinned.length}, minmax(0, 1fr))` }}>
-            {pinned.map((h) => (
-              <div
-                key={h.h3_id}
-                className="bg-white border border-bg-border rounded-2xl p-6 space-y-5"
-                style={{ boxShadow: '0 4px 16px rgba(0,0,0,0.06)' }}
-              >
-                <div>
-                  <p className="text-[10px] font-bold text-fg-tertiary uppercase tracking-[0.15em] mb-1">Location</p>
-                  <h3 className="font-display text-lg font-bold text-fg-primary tracking-tight">{h.locality ?? "Sydney Area"}</h3>
-                </div>
-
-                <div className="flex items-baseline gap-2">
-                  <span className="font-display text-5xl font-bold tabular tracking-tight" style={{ color: scoreHex(h.score) }}>
-                    {h.score}
-                  </span>
-                  <div>
-                    <div className="text-sm text-gray-300 font-bold">/100</div>
-                    <div className="text-sm font-bold mt-0.5" style={{ color: scoreHex(h.score) }}>
-                      {scoreLabel(h.score)}
+        <div className="overflow-auto p-4 sm:p-6">
+          {err && <p className="text-danger">{err}</p>}
+          {!reports && !err && <div className="grid place-items-center h-64"><Spinner className="text-accent w-6 h-6" /></div>}
+          {reports && (
+            <div className="grid gap-4" style={{ gridTemplateColumns: `repeat(auto-fit, minmax(280px, 1fr))` }}>
+              {reports.map((r) => (
+                <article key={r.h3_id} className="card p-5 flex flex-col">
+                  <div className="flex items-start justify-between gap-2">
+                    <div>
+                      <h3 className="text-lg font-medium tracking-display">{r.locality ?? "Sydney"}</h3>
+                      {r.score === best && reports.length > 1 && (
+                        <span className="inline-block mt-1 text-[13px] font-medium text-accent bg-accent-soft rounded-full px-2 py-0.5">Highest score</span>
+                      )}
                     </div>
+                    <button className="text-sm link shrink-0" onClick={() => toggleCompare(r.h3_id)}>Remove</button>
                   </div>
-                </div>
-
-                <div className="space-y-2.5">
-                  {Object.entries(h.components).map(([k, v]) => (
-                    <ScoreBar key={k} name={k} value={v} />
-                  ))}
-                </div>
-
-                <div className="pt-3 border-t border-bg-border space-y-2">
-                  <div className="flex justify-between items-center text-sm">
-                    <span className="text-fg-secondary flex items-center gap-2">
-                      <span className="w-2 h-2 rounded-full bg-red-500 inline-block" />
-                      Competitors (500m)
-                    </span>
-                    <span className="text-fg-primary tabular font-bold">{h.n_competitors}</span>
+                  <div className="mt-4 flex items-baseline gap-2">
+                    <span className="text-[44px] leading-none font-medium tabular tracking-display" style={{ color: scoreHex(r.score) }}>{r.score}</span>
+                    <span className="text-fg-tertiary">/100 · {scoreLabel(r.score)}</span>
                   </div>
-                  <div className="flex justify-between items-center text-sm">
-                    <span className="text-fg-secondary flex items-center gap-2">
-                      <span className="w-2 h-2 rounded-full bg-indigo-500 inline-block" />
-                      Complementary (300m)
-                    </span>
-                    <span className="text-fg-primary tabular font-bold">{h.n_complementary}</span>
+                  <div className="mt-5 space-y-3">
+                    {SIGNAL_KEYS.map((k) => <ScoreBar key={k} name={k} value={r.components[k]} />)}
                   </div>
-                </div>
-              </div>
-            ))}
-          </div>
+                  <dl className="mt-5 pt-4 border-t border-bg-border grid grid-cols-2 gap-y-2 text-sm">
+                    <dt className="text-fg-tertiary">Competitors, 500 m</dt><dd className="text-right tabular">{r.signals_raw.n_competitors}</dd>
+                    <dt className="text-fg-tertiary">Nearest transit</dt><dd className="text-right tabular">{fmtDist(r.signals_raw.d_transit_m)}</dd>
+                    <dt className="text-fg-tertiary">Nearest anchor</dt><dd className="text-right tabular">{fmtDist(r.signals_raw.d_anchor_m)}</dd>
+                    <dt className="text-fg-tertiary">Your nearest store</dt><dd className="text-right tabular">{fmtDist(r.signals_raw.d_cannibal_m)}</dd>
+                  </dl>
+                  <ul className="mt-4 space-y-1.5 text-sm">
+                    {r.reasons.slice(0, 2).map((x) => <li key={x} className="flex gap-2"><Check size={16} className="text-score-high shrink-0 mt-0.5" aria-hidden="true" />{x}</li>)}
+                    {r.risks.map((x) => <li key={x} className="flex gap-2"><AlertTriangle size={15} className="text-score-mid shrink-0 mt-0.5" aria-label="Risk" />{x}</li>)}
+                  </ul>
+                </article>
+              ))}
+            </div>
+          )}
         </div>
-
-        <div className="px-8 py-4 border-t border-bg-border bg-white flex justify-end gap-3">
-          <button
-            onClick={clearPinned}
-            className="text-sm text-fg-tertiary hover:text-fg-primary transition-colors font-medium px-4 py-2"
-          >
-            Clear all pins
-          </button>
-          <button
-            onClick={() => setCompareOpen(false)}
-            className="text-sm font-bold text-white px-5 py-2 rounded-xl transition-colors"
-            style={{ backgroundColor: '#5B9BFF' }}
-            onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = '#0065F0'; }}
-            onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = '#5B9BFF'; }}
-          >
-            Done
-          </button>
-        </div>
-      </motion.div>
-    </AnimatePresence>
+      </div>
+    </motion.div>
   );
 }

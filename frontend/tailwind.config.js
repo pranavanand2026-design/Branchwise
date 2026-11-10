@@ -1,63 +1,49 @@
 /** @type {import('tailwindcss').Config} */
+// Tokens match the landing page's dealt palette (taste kit: mint-pink-accounts, IBM Plex, soft radius).
 export default {
-  content: ["./index.html", "./src/**/*.{ts,tsx}"],
+  content: ["./app.html", "./src/**/*.{ts,tsx}"],
   theme: {
     extend: {
       colors: {
         bg: {
-          base:    "#F3F7FF",
-          panel:   "#FFFFFF",
-          elevated:"#EBF1FB",
-          border:  "#D8E2F0",
+          base: "#f8f8f8",
+          panel: "#ffffff",
+          elevated: "#eeeeee",
+          border: "rgba(10,10,10,0.12)",
         },
         fg: {
-          primary:   "#111827",
-          secondary: "#64748B",
-          tertiary:  "#94A3B8",
-        },
-        brand: {
-          50:  "#EEF4FF",
-          100: "#DBEAFE",
-          300: "#1174FB",
-          400: "#0065F0",
-          500: "#0049AD",
-          600: "#003A8A",
-          700: "#002D6B",
+          primary: "#0a0a0a",
+          secondary: "#3d3d3d",
+          tertiary: "#6a6a6a",
         },
         accent: {
-          DEFAULT: "#F5A623",
-          dim:     "rgba(245, 166, 35, 0.12)",
+          DEFAULT: "#1f6b3a",
+          hover: "#17552e",
+          soft: "#e5efe8",
+          ink: "#ffffff",
         },
         score: {
-          high:   "#3BB273",
-          mid:    "#F5A623",
-          low:    "#E85D5D",
+          high: "#2f8a52",
+          mid: "#c98317",
+          low: "#c2473b",
         },
+        danger: { DEFAULT: "#b3261e", soft: "#fbeceb" },
       },
       fontFamily: {
-        sans: [
-          "Inter",
-          "ui-sans-serif",
-          "-apple-system",
-          "BlinkMacSystemFont",
-          "Segoe UI",
-          "Roboto",
-          "sans-serif",
-        ],
-        display: [
-          "Space Grotesk",
-          "Inter",
-          "ui-sans-serif",
-          "sans-serif",
-        ],
-        mono: ["ui-monospace", "SFMono-Regular", "Menlo", "monospace"],
+        sans: ['"IBM Plex Sans"', "system-ui", "sans-serif"],
+        mono: ['"IBM Plex Mono"', "ui-monospace", "SFMono-Regular", "Menlo", "monospace"],
       },
-      fontFeatureSettings: {
-        tabular: '"tnum"',
+      borderRadius: {
+        sm: "8px",
+        md: "12px",
+        lg: "20px",
       },
       boxShadow: {
-        panel: "0 10px 15px -3px rgba(0,0,0,0.08), 0 4px 6px -2px rgba(0,0,0,0.04)",
-        card:  "0 2px 8px rgba(0,0,0,0.06)",
+        panel: "0 1px 2px rgba(10,10,10,0.04), 0 8px 24px rgba(10,10,10,0.06)",
+        pop: "0 12px 40px rgba(10,10,10,0.14)",
+      },
+      letterSpacing: {
+        display: "-0.025em",
       },
     },
   },

@@ -1,39 +1,27 @@
 import { motion } from "framer-motion";
 import { scoreHex } from "../lib/colors";
+import { useSession } from "../lib/session";
+import type { SignalKey } from "../lib/api";
 
-const LABELS: Record<string, string> = {
-  market_saturation: "Market Saturation",
-  cannibalisation: "Customer Redistribution",
-  surrounding_amenities: "Surrounding Amenities",
-  transit_accessibility: "Transit Accessibility",
-  demographic_match: "Demographic Match",
-};
-
-const WEIGHTS: Record<string, number> = {
-  market_saturation: 25,
-  cannibalisation: 25,
-  surrounding_amenities: 20,
-  transit_accessibility: 15,
-  demographic_match: 15,
-};
-
-export function ScoreBar({ name, value }: { name: string; value: number }) {
+export function ScoreBar({ name, value, weight }: { name: SignalKey; value: number; weight?: number }) {
+  const meta = useSession((s) => s.meta);
+  const label = meta?.signals.find((s) => s.key === name)?.label ?? name;
   return (
-    <div className="space-y-1">
-      <div className="flex justify-between text-xs">
-        <span className="text-gray-600 font-medium">{LABELS[name] ?? name}</span>
-        <span className="tabular text-gray-900 font-semibold">
+    <div>
+      <div className="flex justify-between items-baseline text-sm">
+        <span className="text-fg-secondary">{label}</span>
+        <span className="tabular font-medium">
           {value}
-          <span className="text-gray-400 ml-1 font-normal">×{WEIGHTS[name]}%</span>
+          {weight != null && <span className="text-fg-tertiary font-normal"> · {Math.round(weight)}% weight</span>}
         </span>
       </div>
-      <div className="h-1.5 rounded-full bg-gray-100 overflow-hidden">
+      <div className="mt-1.5 h-1.5 rounded-full bg-bg-elevated overflow-hidden">
         <motion.div
           className="h-full rounded-full"
           style={{ backgroundColor: scoreHex(value) }}
           initial={{ width: 0 }}
           animate={{ width: `${value}%` }}
-          transition={{ duration: 0.6, ease: "easeOut" }}
+          transition={{ duration: 0.5, ease: "easeOut" }}
         />
       </div>
     </div>

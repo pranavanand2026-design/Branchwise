@@ -13,6 +13,7 @@ from .security import (
     current_user_optional, enforce_rate, hash_password, limiter, needs_rehash,
     password_problem, revoke_all_sessions, revoke_session, verify_password,
 )
+from .settings import settings
 from .storage import User, get_db, utcnow
 
 router = APIRouter(prefix="/api")
@@ -40,7 +41,9 @@ class DeleteAccountIn(BaseModel):
 
 def _normalise_email(raw: str) -> str:
     try:
-        return validate_email(raw.strip(), check_deliverability=False).normalized.lower()
+        # reserved test domains (.test, .localhost) are accepted only outside production
+        return validate_email(raw.strip(), check_deliverability=False,
+                              test_environment=not settings.is_production).normalized.lower()
     except EmailNotValidError:
         raise HTTPException(422,
                             {"field": "email", "message": "Enter a valid email address."})

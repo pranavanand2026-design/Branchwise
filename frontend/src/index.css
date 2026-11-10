@@ -6,36 +6,70 @@
   color-scheme: light;
 }
 
+*, *::before, *::after { box-sizing: border-box; }
+
 html, body, #root {
   height: 100%;
   margin: 0;
   padding: 0;
-  background: #F3F7FF;
-  color: #111827;
-  font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+  background: #f8f8f8;
+  color: #0a0a0a;
+  font-family: "IBM Plex Sans", system-ui, sans-serif;
   -webkit-font-smoothing: antialiased;
-  font-feature-settings: "cv02", "cv03", "cv04", "tnum";
+  text-rendering: optimizeLegibility;
 }
-
-/* Force light mode on all form elements */
-select, input, textarea, button {
-  color-scheme: light !important;
-}
-
-/* MapLibre canvas should fill its container */
-.maplibregl-canvas { outline: none !important; }
-.maplibregl-map { background: #E8EEF8 !important; }
-
-/* Scrollbars — light theme */
-::-webkit-scrollbar { width: 5px; height: 5px; }
-::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: #D1C9BC; border-radius: 8px; }
-::-webkit-scrollbar-thumb:hover { background: #9CA3AF; }
 
 .tabular { font-variant-numeric: tabular-nums; }
 
-/* Ensures deck.gl tooltip resets in light mode */
-.deck-tooltip {
-  color: #111827 !important;
-  background: #FFFFFF !important;
+/* one focus ring everywhere, never animated */
+:focus-visible {
+  outline: 2px solid #1f6b3a;
+  outline-offset: 2px;
 }
+
+@layer components {
+  .btn {
+    @apply inline-flex items-center justify-center gap-2 h-11 px-5 rounded-sm text-[15px] font-medium
+      transition-[background-color,color,transform] duration-150 select-none
+      disabled:opacity-50 disabled:pointer-events-none active:translate-y-px;
+  }
+  .btn-primary { @apply btn bg-accent text-accent-ink hover:bg-accent-hover; }
+  .btn-secondary { @apply btn bg-accent-soft text-accent hover:bg-[#d7e7dc]; }
+  .btn-quiet { @apply btn bg-transparent text-fg-secondary hover:bg-bg-elevated hover:text-fg-primary; }
+  .btn-danger { @apply btn bg-danger text-white hover:bg-[#93201a]; }
+  .btn-sm { @apply h-9 px-3.5 text-sm; }
+
+  .field-label { @apply block text-sm font-medium text-fg-primary mb-1.5; }
+  .field-input {
+    @apply w-full h-12 px-3.5 rounded-sm bg-white border border-bg-border text-base text-fg-primary
+      placeholder:text-fg-tertiary transition-colors
+      hover:border-[rgba(10,10,10,0.28)] focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/25;
+  }
+  .field-input[aria-invalid="true"] { @apply border-danger ring-2 ring-danger/15; }
+  .field-error { @apply mt-1.5 text-sm text-danger; }
+  .field-hint { @apply mt-1.5 text-sm text-fg-tertiary; }
+
+  .card { @apply bg-white border border-bg-border rounded-md; }
+  .label { @apply text-[13px] font-medium text-fg-tertiary; }
+  .link { @apply text-accent underline decoration-accent/30 underline-offset-[3px] hover:decoration-accent; }
+}
+
+/* MapLibre */
+.maplibregl-canvas { outline: none !important; }
+.maplibregl-map { background: #ebebe8 !important; font-family: inherit; }
+.maplibregl-ctrl-attrib { font-size: 11px; }
+
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: rgba(10,10,10,0.14); border-radius: 8px; border: 2px solid transparent; background-clip: padding-box; }
+
+.deck-tooltip { background: transparent !important; padding: 0 !important; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
+}
+
+@keyframes slide { from { transform: translateX(-100%); } to { transform: translateX(300%); } }
+
+/* deck.gl draws in the top-left control corner (z-index 2); keep HTML pins above it */
+.maplibregl-marker { z-index: 3; }
