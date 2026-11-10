@@ -4,44 +4,164 @@
     "bubble_tea": {
       "label": "Bubble tea",
       "blurb": "Bubble tea and tea bars",
-      "competitors": ["Bubble Tea Shop", "Tea Room"],
-      "complementary": ["Coffee Shop", "Bakery", "Fast Food Restaurant", "Ice Cream Parlor", "Dessert Shop", "Asian Restaurant", "Restaurant"],
-      "anchors": ["College and University", "University", "Shopping Mall", "Shopping Plaza", "High School", "Rail Station", "Metro Station", "Bus Station", "Hospital"]
+      "competitors": [
+        "Bubble Tea Shop",
+        "Tea Room"
+      ],
+      "complementary": [
+        "Coffee Shop",
+        "Bakery",
+        "Fast Food Restaurant",
+        "Ice Cream Parlor",
+        "Dessert Shop",
+        "Asian Restaurant",
+        "Restaurant"
+      ],
+      "anchors": [
+        "College and University",
+        "University",
+        "Shopping Mall",
+        "Shopping Plaza",
+        "High School",
+        "Rail Station",
+        "Metro Station",
+        "Hospital"
+      ]
     },
     "coffee": {
       "label": "Coffee",
       "blurb": "Specialty coffee and cafés",
-      "competitors": ["Coffee Shop", "Cafe, Coffee, and Tea House", "Café"],
-      "complementary": ["Bakery", "Sandwich Spot", "Breakfast Spot", "Juice Bar", "Bookstore", "Gym"],
-      "anchors": ["Office", "Coworking Space", "College and University", "University", "Rail Station", "Metro Station", "Bus Station", "Shopping Mall", "Hospital"]
+      "competitors": [
+        "Coffee Shop",
+        "Cafe, Coffee, and Tea House",
+        "Café",
+        "Coffee Roaster",
+        "Corporate Coffee Shop"
+      ],
+      "complementary": [
+        "Bakery",
+        "Sandwich Spot",
+        "Breakfast Spot",
+        "Juice Bar",
+        "Bookstore",
+        "Gym"
+      ],
+      "anchors": [
+        "Office",
+        "Coworking Space",
+        "College and University",
+        "University",
+        "Rail Station",
+        "Metro Station",
+        "Shopping Mall",
+        "Hospital"
+      ]
     },
     "fast_casual": {
       "label": "Fast casual",
       "blurb": "Quick-service meals, burgers, burritos, bowls",
-      "competitors": ["Fast Food Restaurant", "Burger Joint", "Sandwich Spot", "Restaurant"],
-      "complementary": ["Coffee Shop", "Café", "Juice Bar", "Bubble Tea Shop", "Dessert Shop"],
-      "anchors": ["Shopping Mall", "Office", "College and University", "University", "Hospital", "Rail Station", "Metro Station", "Bus Station"]
+      "competitors": [
+        "Fast Food Restaurant",
+        "Burger Joint",
+        "Sandwich Spot",
+        "Restaurant"
+      ],
+      "complementary": [
+        "Coffee Shop",
+        "Café",
+        "Juice Bar",
+        "Bubble Tea Shop",
+        "Dessert Shop"
+      ],
+      "anchors": [
+        "Shopping Mall",
+        "Office",
+        "College and University",
+        "University",
+        "Hospital",
+        "Rail Station",
+        "Metro Station"
+      ]
     },
     "bakery": {
       "label": "Bakery",
       "blurb": "Bakeries, patisseries and bánh mì",
-      "competitors": ["Bakery", "Pastry Shop", "Donut Shop"],
-      "complementary": ["Coffee Shop", "Café", "Supermarket", "Convenience Store", "Juice Bar"],
-      "anchors": ["Rail Station", "Metro Station", "Bus Station", "Shopping Mall", "Shopping Plaza", "Office", "Hospital", "High School"]
+      "competitors": [
+        "Bakery",
+        "Pastry Shop",
+        "Donut Shop"
+      ],
+      "complementary": [
+        "Coffee Shop",
+        "Café",
+        "Supermarket",
+        "Convenience Store",
+        "Juice Bar"
+      ],
+      "anchors": [
+        "Rail Station",
+        "Metro Station",
+        "Shopping Mall",
+        "Shopping Plaza",
+        "Office",
+        "Hospital",
+        "High School"
+      ]
     },
     "dessert": {
       "label": "Dessert",
       "blurb": "Gelato, ice cream and dessert bars",
-      "competitors": ["Ice Cream Parlor", "Dessert Shop", "Frozen Yogurt Shop"],
-      "complementary": ["Restaurant", "Asian Restaurant", "Italian Restaurant", "Bar", "Bubble Tea Shop", "Coffee Shop"],
-      "anchors": ["Shopping Mall", "Shopping Plaza", "College and University", "University", "Rail Station", "Metro Station", "Movie Theater", "Beach"]
+      "competitors": [
+        "Ice Cream Parlor",
+        "Dessert Shop",
+        "Frozen Yogurt Shop"
+      ],
+      "complementary": [
+        "Restaurant",
+        "Asian Restaurant",
+        "Italian Restaurant",
+        "Bar",
+        "Bubble Tea Shop",
+        "Coffee Shop"
+      ],
+      "anchors": [
+        "Shopping Mall",
+        "Shopping Plaza",
+        "College and University",
+        "University",
+        "Rail Station",
+        "Metro Station",
+        "Movie Theater",
+        "Beach"
+      ]
     },
     "healthy": {
       "label": "Healthy",
       "blurb": "Juice, smoothies, salads and acai",
-      "competitors": ["Juice Bar", "Smoothie Shop", "Salad Restaurant", "Health Food Store"],
-      "complementary": ["Gym", "Yoga Studio", "Coffee Shop", "Café", "Supermarket"],
-      "anchors": ["Office", "Coworking Space", "Gym", "College and University", "University", "Shopping Mall", "Rail Station", "Metro Station", "Hospital"]
+      "competitors": [
+        "Juice Bar",
+        "Smoothie Shop",
+        "Salad Restaurant",
+        "Health Food Store"
+      ],
+      "complementary": [
+        "Gym",
+        "Yoga Studio",
+        "Coffee Shop",
+        "Café",
+        "Supermarket"
+      ],
+      "anchors": [
+        "Office",
+        "Coworking Space",
+        "Gym",
+        "College and University",
+        "University",
+        "Shopping Mall",
+        "Rail Station",
+        "Metro Station",
+        "Hospital"
+      ]
     }
   },
   "transit_categories": [
@@ -51,7 +171,8 @@
     "Bus Station",
     "Bus Stop",
     "Light Rail Station",
-    "Ferry Terminal"
+    "Boat or Ferry",
+    "Tram Station"
   ],
   "retail_fnb_categories": [
     "Restaurant",
@@ -78,14 +199,59 @@
     "Retail"
   ],
   "regions": {
-    "cbd": { "label": "CBD & inner city", "lat": -33.874, "lng": 151.207, "radius_km": 2.6 },
-    "inner_west": { "label": "Inner West", "lat": -33.893, "lng": 151.158, "radius_km": 4.0 },
-    "eastern_suburbs": { "label": "Eastern Suburbs", "lat": -33.902, "lng": 151.248, "radius_km": 4.0 },
-    "lower_north_shore": { "label": "Lower North Shore", "lat": -33.815, "lng": 151.195, "radius_km": 4.5 },
-    "ryde_macquarie": { "label": "Ryde & Macquarie Park", "lat": -33.785, "lng": 151.115, "radius_km": 4.5 },
-    "canterbury_bankstown": { "label": "Canterbury–Bankstown", "lat": -33.915, "lng": 151.060, "radius_km": 5.5 },
-    "st_george_south": { "label": "St George & the south", "lat": -33.960, "lng": 151.115, "radius_km": 5.5 },
-    "parramatta_west": { "label": "Parramatta & the west", "lat": -33.818, "lng": 151.000, "radius_km": 6.5 },
-    "northern_beaches": { "label": "Northern Beaches", "lat": -33.745, "lng": 151.280, "radius_km": 7.0 }
+    "cbd": {
+      "label": "CBD & inner city",
+      "lat": -33.874,
+      "lng": 151.207,
+      "radius_km": 2.6
+    },
+    "inner_west": {
+      "label": "Inner West",
+      "lat": -33.893,
+      "lng": 151.158,
+      "radius_km": 4.0
+    },
+    "eastern_suburbs": {
+      "label": "Eastern Suburbs",
+      "lat": -33.902,
+      "lng": 151.248,
+      "radius_km": 4.0
+    },
+    "lower_north_shore": {
+      "label": "Lower North Shore",
+      "lat": -33.815,
+      "lng": 151.195,
+      "radius_km": 4.5
+    },
+    "ryde_macquarie": {
+      "label": "Ryde & Macquarie Park",
+      "lat": -33.785,
+      "lng": 151.115,
+      "radius_km": 4.5
+    },
+    "canterbury_bankstown": {
+      "label": "Canterbury–Bankstown",
+      "lat": -33.915,
+      "lng": 151.06,
+      "radius_km": 5.5
+    },
+    "st_george_south": {
+      "label": "St George & the south",
+      "lat": -33.96,
+      "lng": 151.115,
+      "radius_km": 5.5
+    },
+    "parramatta_west": {
+      "label": "Parramatta & the west",
+      "lat": -33.818,
+      "lng": 151.0,
+      "radius_km": 6.5
+    },
+    "northern_beaches": {
+      "label": "Northern Beaches",
+      "lat": -33.745,
+      "lng": 151.28,
+      "radius_km": 7.0
+    }
   }
 }

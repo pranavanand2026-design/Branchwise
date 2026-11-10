@@ -1,9 +1,24 @@
 import { forwardRef, useId, type InputHTMLAttributes, type ReactNode } from "react";
 import { useSession } from "../lib/session";
 
-export function Logo({ size = 20, href }: { size?: number; href?: string }) {
+/** The mark: a navy hexagon (a map zone) with a pin cut into it. */
+export function LogoMark({ size = 24, invert = false }: { size?: number; invert?: boolean }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 32 32" aria-hidden="true">
+      <path d="M16 2.5 28 9.5v13L16 29.5 4 22.5v-13z" fill={invert ? "#F4FCFB" : "#243C4C"} />
+      <path d="M16 9.2a5.3 5.3 0 0 0-5.3 5.3c0 4 5.3 9.3 5.3 9.3s5.3-5.3 5.3-9.3A5.3 5.3 0 0 0 16 9.2z" fill={invert ? "#243C4C" : "#F4FCFB"} />
+      <circle cx="16" cy="14.5" r="2.2" fill="#5289AD" />
+    </svg>
+  );
+}
+
+export function Logo({ size = 20, href, invert = false }: { size?: number; href?: string; invert?: boolean }) {
   const inner = (
-    <span className="inline-flex items-center font-medium tracking-display text-fg-primary" style={{ fontSize: size }}>
+    <span
+      className={`inline-flex items-center gap-2 font-display ${invert ? "text-brand-mint" : "text-fg-primary"}`}
+      style={{ fontSize: size }}
+    >
+      <LogoMark size={Math.round(size * 1.3)} invert={invert} />
       Branchwise
     </span>
   );

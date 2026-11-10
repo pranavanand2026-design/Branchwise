@@ -5,7 +5,7 @@ import { MapboxOverlay, type MapboxOverlayProps } from "@deck.gl/mapbox";
 import { api, type HexResult, type Pin } from "../lib/api";
 import { useWorkspace } from "../lib/store";
 import { useSession } from "../lib/session";
-import { scoreColor, scoreHex } from "../lib/colors";
+import { scoreColor, scoreHex, scoreLabel } from "../lib/colors";
 
 const INITIAL_VIEW = { latitude: -33.875, longitude: 151.16, zoom: 11.3, pitch: 0, bearing: 0 };
 const BASEMAP = "https://basemaps.cartocdn.com/gl/positron-gl-style/style.json";
@@ -105,7 +105,7 @@ export function MapView({ onOpenSite }: { onOpenSite: (h3: string, lat: number, 
       stroked: true,
       extruded: false,
       pickable: true,
-      opacity: 0.72,
+      opacity: 0.55,
       autoHighlight: true,
       highlightColor: [10, 10, 10, 40],
       onClick: ({ object }) => object && onOpenSite(object.h3_id, object.lat, object.lng),
@@ -127,10 +127,10 @@ export function MapView({ onOpenSite }: { onOpenSite: (h3: string, lat: number, 
   const getTooltip = ({ object, layer }: { object?: HexResult; layer?: { id: string } | null }) => {
     if (!object || layer?.id !== "hexes") return null;
     return {
-      html: `<div style="background:#fff;border:1px solid rgba(10,10,10,.12);border-radius:8px;padding:8px 12px;font:14px 'IBM Plex Sans',sans-serif;color:#0a0a0a;box-shadow:0 8px 24px rgba(10,10,10,.1)">
+      html: `<div style="background:#fff;border:1px solid rgba(10,10,10,.12);border-radius:8px;padding:8px 12px;font:14px 'IBM Plex Sans',sans-serif;color:#243C4C;box-shadow:0 8px 24px rgba(10,10,10,.1)">
         <div style="font-weight:500">${esc(object.locality ?? "Sydney")}</div>
-        <div style="margin-top:2px"><span style="font-size:20px;font-weight:500;color:${scoreHex(object.score)}">${object.score}</span><span style="color:#6a6a6a"> /100</span></div>
-        <div style="color:#6a6a6a;font-size:13px;margin-top:2px">${object.n_competitors} competitor${object.n_competitors === 1 ? "" : "s"} within 500 m</div>
+        <div style="margin-top:3px;font-weight:500;color:${scoreHex(object.score)}">${scoreLabel(object.score)}</div>
+        <div style="color:#516C7C;font-size:13px;margin-top:2px">${object.n_competitors} competitor${object.n_competitors === 1 ? "" : "s"} within 500 m</div>
       </div>`,
       style: { background: "transparent", border: "none", padding: "0" },
     };
@@ -154,7 +154,7 @@ export function MapView({ onOpenSite }: { onOpenSite: (h3: string, lat: number, 
           pins.filter((p) => p.is_competitor).map((p) => (
             <Marker key={p.fsq_place_id} longitude={p.longitude} latitude={p.latitude} anchor="center">
               <span
-                className="block w-2.5 h-2.5 rounded-full bg-score-low ring-2 ring-white shadow"
+                className="block w-2.5 h-2.5 rounded-full bg-score-weak ring-2 ring-white shadow"
                 title={`${p.name} · competitor`}
               />
             </Marker>
@@ -164,7 +164,7 @@ export function MapView({ onOpenSite }: { onOpenSite: (h3: string, lat: number, 
           pins.filter((p) => (p.is_complementary || p.is_anchor) && !p.is_competitor).map((p) => (
             <Marker key={p.fsq_place_id} longitude={p.longitude} latitude={p.latitude} anchor="center">
               <span
-                className={`block rounded-full ring-2 ring-white shadow ${p.is_anchor ? "w-3 h-3 bg-[#2563a8]" : "w-2 h-2 bg-[#5b8fd1]"}`}
+                className={`block rounded-full ring-2 ring-white shadow ${p.is_anchor ? "w-3 h-3 bg-[#243C4C]" : "w-2 h-2 bg-[#698696]"}`}
                 title={`${p.name} · ${p.is_anchor ? "anchor" : "complementary"}`}
               />
             </Marker>
@@ -175,7 +175,7 @@ export function MapView({ onOpenSite }: { onOpenSite: (h3: string, lat: number, 
             <Marker key={s.id ?? i} longitude={s.lng} latitude={s.lat} anchor="bottom">
               <svg width="22" height="28" viewBox="0 0 26 34" aria-label={`${s.name} (your store)`} role="img">
                 <title>{`${s.name} · your store`}</title>
-                <path d="M13 0C5.8 0 0 5.8 0 13c0 9.1 13 21 13 21s13-11.9 13-21C26 5.8 20.2 0 13 0z" fill="#0a0a0a" />
+                <path d="M13 0C5.8 0 0 5.8 0 13c0 9.1 13 21 13 21s13-11.9 13-21C26 5.8 20.2 0 13 0z" fill="#243C4C" />
                 <circle cx="13" cy="13" r="5" fill="#fff" />
               </svg>
             </Marker>
@@ -210,7 +210,7 @@ export function MapView({ onOpenSite }: { onOpenSite: (h3: string, lat: number, 
       {loadingHeatmap && (
         <div className="absolute top-4 left-1/2 -translate-x-1/2 h-9 px-4 rounded-full bg-white shadow-panel border border-bg-border text-sm flex items-center gap-2 z-10" role="status">
           <span className="w-3.5 h-3.5 border-2 border-accent border-t-transparent rounded-full animate-spin" aria-hidden="true" />
-          Scoring Sydney for {brand?.name}
+          Finding the best areas for {brand?.name}
         </div>
       )}
       {!loadingHeatmap && heatmapError && (

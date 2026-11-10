@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
-import { AlertTriangle, Bookmark, Check, ChevronDown, Trash2 } from "lucide-react";
+import { Bookmark, ChevronDown, Trash2 } from "lucide-react";
 import { api, type RankedSite, type SavedSite } from "../lib/api";
-import { scoreHex } from "../lib/colors";
+import { scoreHex, scoreLabel } from "../lib/colors";
 import { useSession } from "../lib/session";
 import { useWorkspace } from "../lib/store";
 import { Segmented, Spinner } from "./ui";
@@ -21,7 +21,7 @@ export function SitePanel({ onOpenSite }: { onOpenSite: (h3: string, lat: number
     set({ loadingRanked: true });
     setErr(null);
     api
-      .rankings(20, activeRegions)
+      .rankings(10, activeRegions)
       .then((d) => set({ ranked: d.sites }))
       .catch((e) => setErr((e as Error).message))
       .finally(() => set({ loadingRanked: false }));
@@ -41,7 +41,7 @@ export function SitePanel({ onOpenSite }: { onOpenSite: (h3: string, lat: number
           value={panelTab}
           onChange={(v) => set({ panelTab: v })}
           options={[
-            { value: "ranked", label: "Ranked sites" },
+            { value: "ranked", label: "Best areas" },
             { value: "shortlist", label: `Shortlist${shortlist.length ? ` (${shortlist.length})` : ""}` },
           ]}
         />
@@ -110,50 +110,39 @@ function Chip({ on, onClick, children }: { on: boolean; onClick: () => void; chi
   );
 }
 
+function FitChip({ score }: { score: number }) {
+  return (
+    <span className="inline-flex items-center gap-1.5 h-6 px-2.5 rounded-full text-[13px] font-medium whitespace-nowrap"
+      style={{ color: scoreHex(score), background: `${scoreHex(score)}14` }}>
+      <span className="w-1.5 h-1.5 rounded-full" style={{ background: scoreHex(score) }} aria-hidden="true" />
+      {scoreLabel(score)}
+    </span>
+  );
+}
+
 function RankedRow({ s, onOpen }: { s: RankedSite; onOpen: (h3: string, lat: number, lng: number) => void }) {
-  const { selectedHex, hoveredHex, shortlist, compareIds, toggleCompare, set } = useWorkspace();
+  const { selectedHex, hoveredHex, shortlist, set } = useWorkspace();
   const active = selectedHex?.h3_id === s.h3_id;
   const hovered = hoveredHex === s.h3_id;
   const saved = shortlist.some((x) => x.h3_id === s.h3_id);
-  const inCompare = compareIds.includes(s.h3_id);
+  const why = s.reasons[0];
   return (
     <li
-      className={`relative group transition-colors ${active ? "bg-accent-soft" : hovered ? "bg-bg-base" : ""}`}
+      className={`transition-colors ${active ? "bg-accent-soft" : hovered ? "bg-bg-base" : ""}`}
       onMouseEnter={() => set({ hoveredHex: s.h3_id })}
       onMouseLeave={() => set({ hoveredHex: null })}
     >
-      <button className="w-full text-left p-4 pr-12" onClick={() => onOpen(s.h3_id, s.lat, s.lng)} aria-current={active ? "true" : undefined}>
-        <div className="flex items-center gap-3">
-          <span className="w-7 h-7 shrink-0 grid place-items-center rounded-full bg-bg-elevated text-[13px] font-medium tabular">{s.rank}</span>
-          <span className="flex-1 min-w-0">
-            <span className="block text-[15px] font-medium truncate">
-              {s.locality ?? "Sydney"}
-              {saved && <Bookmark size={13} className="inline ml-1.5 -mt-0.5 text-accent fill-accent" aria-label="Saved" />}
-            </span>
+      <button className="w-full text-left px-4 py-3.5 flex items-start gap-3" onClick={() => onOpen(s.h3_id, s.lat, s.lng)} aria-current={active ? "true" : undefined}>
+        <span className="w-7 h-7 shrink-0 grid place-items-center rounded-full bg-brand-navy text-white text-[13px] font-medium tabular mt-0.5">{s.rank}</span>
+        <span className="flex-1 min-w-0">
+          <span className="flex items-center gap-2">
+            <span className="font-display text-[17px] truncate">{s.locality ?? "Sydney"}</span>
+            {saved && <Bookmark size={13} className="shrink-0 text-accent-link fill-accent-link" aria-label="Saved" />}
           </span>
-          <span className="text-xl font-medium tabular" style={{ color: scoreHex(s.score) }}>{s.score}</span>
-        </div>
-        <ul className="mt-2 ml-10 space-y-1">
-          {s.reasons.slice(0, 2).map((r) => (
-            <li key={r} className="flex gap-1.5 text-sm text-fg-secondary leading-snug">
-              <Check size={15} className="text-score-high shrink-0 mt-px" aria-hidden="true" />
-              {r}
-            </li>
-          ))}
-          {s.risks.slice(0, 1).map((r) => (
-            <li key={r} className="flex gap-1.5 text-sm text-fg-secondary leading-snug">
-              <AlertTriangle size={14} className="text-score-mid shrink-0 mt-0.5" aria-label="Risk" />
-              {r}
-            </li>
-          ))}
-        </ul>
+          {why && <span className="block mt-0.5 text-sm text-fg-secondary leading-snug line-clamp-2">{why}</span>}
+        </span>
+        <FitChip score={s.score} />
       </button>
-      <label
-        className={`absolute right-3 top-4 w-8 h-8 grid place-items-center rounded-sm cursor-pointer hover:bg-white ${inCompare ? "" : "opacity-60 group-hover:opacity-100"}`}
-        title="Add to compare"
-      >
-        <input type="checkbox" className="w-4 h-4 accent-[#1f6b3a]" checked={inCompare} onChange={() => toggleCompare(s.h3_id)} aria-label={`Compare ${s.locality ?? "site"} #${s.rank}`} />
-      </label>
     </li>
   );
 }
@@ -189,13 +178,13 @@ function ShortlistView({ onOpen }: { onOpen: (h3: string, lat: number, lng: numb
                 <span className="block text-[15px] font-medium truncate hover:underline">{s.locality ?? "Sydney"}</span>
                 <span className="block text-[13px] text-fg-tertiary">
                   Saved {new Date(s.created_at).toLocaleDateString("en-AU", { day: "numeric", month: "short" })}
-                  {drift !== 0 && ` · was ${s.score_at_save}`}
+                  {drift !== 0 && ` · fit has changed`}
                 </span>
               </button>
-              <span className="text-xl font-medium tabular" style={{ color: scoreHex(score) }}>{score}</span>
+              <FitChip score={score} />
               <input
                 type="checkbox"
-                className="w-4 h-4 accent-[#1f6b3a]"
+                className="w-4 h-4 accent-[#243C4C]"
                 checked={compareIds.includes(s.h3_id)}
                 onChange={() => toggleCompare(s.h3_id)}
                 aria-label={`Compare ${s.locality ?? "site"}`}

@@ -54,20 +54,20 @@ export function Workspace() {
   const tourSteps: TourStep[] = [
     {
       target: "ranked",
-      title: "Your ranked sites",
-      body: `The best zones in Sydney for ${brand?.name}, scored with your priorities. Sites are kept at least 900 m apart so the list isn't ten corners of one suburb.`,
+      title: "Your best areas",
+      body: `The ten parts of Sydney that suit ${brand?.name} best, with the main reason for each. Tap one to see more.`,
       before: () => { ws.set({ panelTab: "ranked", selectedHex: null }); setMobileView("list"); },
     },
     {
       target: "map",
-      title: "Every zone on the map",
-      body: "Each hexagon is about 300 m across. Green scores 75 or more, amber 50 to 74, red under 50. Numbered pins are your top ten; black pins are your own stores.",
+      title: "The whole city at a glance",
+      body: "Darker blue means a better fit for your brand. The numbered pins are your top ten; the dark pins are your own stores.",
       before: () => setMobileView("map"),
     },
     {
       target: "report",
-      title: "Why a site scores what it does",
-      body: "Open any site for its breakdown: the five signals, your weight on each, the nearest competitors, anchors and transit.",
+      title: "Why an area fits",
+      body: "Each area tells you why it suits you and what to check before you commit. Scores are under Score details if you want them.",
       before: async () => {
         const top = useWorkspace.getState().ranked[0];
         if (top) await openSite(top.h3_id, top.lat, top.lng);
@@ -75,13 +75,13 @@ export function Workspace() {
     },
     {
       target: "save",
-      title: "Shortlist and compare",
-      body: "Save sites to your shortlist with a note for your team, and tick up to three to compare side by side.",
+      title: "Keep a shortlist",
+      body: "Save the areas you like and add a note for your team. Compare up to three side by side.",
     },
     {
       target: "settings",
-      title: "Change your priorities any time",
-      body: "Edit your stores, priorities or areas in Settings and every score updates. You can replay this tour from there too.",
+      title: "Change your mind any time",
+      body: "Update your stores, what matters most or where you'd open in Settings. Your best areas update straight away.",
       before: () => ws.set({ selectedHex: null }),
     },
   ];
@@ -162,21 +162,21 @@ export function Workspace() {
 const LAYERS: { key: Layer; label: string; swatch: React.ReactNode }[] = [
   {
     key: "opportunity",
-    label: "Scores",
+    label: "How well it fits",
     swatch: (
       <span className="flex gap-0.5" aria-hidden="true">
-        {["#2f8a52", "#c98317", "#c2473b"].map((c) => <span key={c} className="w-2 h-3 rounded-[2px]" style={{ background: c }} />)}
+        {["#2E6A93", "#5289AD", "#ACBCBF"].map((c) => <span key={c} className="w-2 h-3 rounded-[2px]" style={{ background: c }} />)}
       </span>
     ),
   },
-  { key: "competitors", label: "Competitors", swatch: <span className="w-2.5 h-2.5 rounded-full bg-score-low ring-2 ring-white" aria-hidden="true" /> },
-  { key: "complementary", label: "Anchors and complements", swatch: <span className="w-2.5 h-2.5 rounded-full bg-[#2563a8] ring-2 ring-white" aria-hidden="true" /> },
+  { key: "competitors", label: "Competitors", swatch: <span className="w-2.5 h-2.5 rounded-full bg-score-weak ring-2 ring-white" aria-hidden="true" /> },
+  { key: "complementary", label: "Anchors and complements", swatch: <span className="w-2.5 h-2.5 rounded-full bg-[#243C4C] ring-2 ring-white" aria-hidden="true" /> },
   { key: "own_stores", label: "Your stores", swatch: <span className="w-2.5 h-2.5 rounded-full bg-fg-primary ring-2 ring-white" aria-hidden="true" /> },
 ];
 
 function LayerToggles() {
   const { layers, toggleLayer } = useWorkspace();
-  const [open, setOpen] = useState(true);
+  const [open, setOpen] = useState(false);
   return (
     <div className="absolute left-3 bottom-8 md:bottom-3 z-10 bg-white/95 rounded-md shadow-panel border border-bg-border text-sm">
       <button className="w-full flex items-center gap-2 h-10 px-3 font-medium" onClick={() => setOpen((o) => !o)} aria-expanded={open}>
@@ -187,13 +187,13 @@ function LayerToggles() {
           {LAYERS.map((l) => (
             <li key={l.key}>
               <label className="flex items-center gap-2.5 cursor-pointer h-7">
-                <input type="checkbox" className="w-4 h-4 accent-[#1f6b3a]" checked={layers[l.key]} onChange={() => toggleLayer(l.key)} />
+                <input type="checkbox" className="w-4 h-4 accent-[#243C4C]" checked={layers[l.key]} onChange={() => toggleLayer(l.key)} />
                 <span className="w-6 grid place-items-center">{l.swatch}</span>
                 {l.label}
               </label>
             </li>
           ))}
-          <li className="text-[13px] text-fg-tertiary pt-1">Pins show from street level.</li>
+          <li className="text-[13px] text-fg-tertiary pt-1">Darker blue is a better fit. Pins show when you zoom in.</li>
         </ul>
       )}
     </div>

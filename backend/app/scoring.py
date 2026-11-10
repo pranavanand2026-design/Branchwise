@@ -75,6 +75,8 @@ class HexSignals:
     n_retail: int
     d_anchor_m: float | None
     d_transit_m: float | None
+    anchor_name: str | None = None
+    transit_name: str | None = None
 
 
 @dataclass
@@ -279,22 +281,22 @@ def _compute_vertical_signals(vertical_key: str) -> list[HexSignals]:
       ) GROUP BY h3_9
     ),
     anchor AS (
-      SELECT c.h3_9, MIN({d_sql}) AS d_anchor_m
-      FROM cells c JOIN (SELECT latitude, longitude FROM tagged WHERE is_anchor) t
+      SELECT c.h3_9, MIN({d_sql}) AS d_anchor_m, ARG_MIN(t.name, {d_sql}) AS anchor_name
+      FROM cells c JOIN (SELECT latitude, longitude, name FROM tagged WHERE is_anchor) t
         ON t.latitude  BETWEEN c.lat - {anc_lat} AND c.lat + {anc_lat}
        AND t.longitude BETWEEN c.lng - {anc_lng} AND c.lng + {anc_lng}
       GROUP BY c.h3_9
     ),
     transit AS (
-      SELECT c.h3_9, MIN({d_sql}) AS d_transit_m
-      FROM cells c JOIN (SELECT latitude, longitude FROM tagged WHERE is_transit) t
+      SELECT c.h3_9, MIN({d_sql}) AS d_transit_m, ARG_MIN(t.name, {d_sql}) AS transit_name
+      FROM cells c JOIN (SELECT latitude, longitude, name FROM tagged WHERE is_transit) t
         ON t.latitude  BETWEEN c.lat - {tr_lat} AND c.lat + {tr_lat}
        AND t.longitude BETWEEN c.lng - {tr_lng} AND c.lng + {tr_lng}
       GROUP BY c.h3_9
     )
     SELECT c.h3_9, c.lat, c.lng, c.locality, c.region, c.postcode,
            COALESCE(n.n_competitors, 0), COALESCE(n.n_complementary, 0), COALESCE(n.n_retail, 0),
-           a.d_anchor_m, tr.d_transit_m
+           a.d_anchor_m, tr.d_transit_m, a.anchor_name, tr.transit_name
     FROM cells c
     LEFT JOIN near n    USING (h3_9)
     LEFT JOIN anchor a  USING (h3_9)
@@ -309,6 +311,7 @@ def _compute_vertical_signals(vertical_key: str) -> list[HexSignals]:
             n_competitors=int(r[6]), n_complementary=int(r[7]), n_retail=int(r[8]),
             d_anchor_m=float(r[9]) if r[9] is not None else None,
             d_transit_m=float(r[10]) if r[10] is not None else None,
+            anchor_name=r[11], transit_name=r[12],
         )
         for r in rows
     ]
@@ -395,6 +398,8 @@ def _score_profile_impl(profile: Profile) -> list[HexScore]:
                 "n_retail": s.n_retail,
                 "d_anchor_m": s.d_anchor_m,
                 "d_transit_m": s.d_transit_m,
+                "anchor_name": s.anchor_name,
+                "transit_name": s.transit_name,
                 "d_cannibal_m": d_cannibal,
             },
         ))
@@ -434,6 +439,15 @@ def _fmt_m(m: float | None) -> str:
     return f"{round(m)} m" if m < 1000 else f"{m / 1000:.1f} km"
 
 
+def _short(name: str | None, n: int = 36) -> str | None:
+    if not name:
+        return name
+    import re
+    if re.search(r"\d{5,}", name):  # stop codes like "Bus Stop 201063" mean nothing to a reader
+        return "A bus stop" if "bus" in name.lower() else None
+    return name if len(name) <= n else name[: n - 1].rstrip(" ,-") + "…"
+
+
 def explain(h: HexScore, weights: dict[str, float]) -> dict:
     """Plain-English reasons + risks for one site, ordered by weighted impact."""
     contrib = sorted(SIGNALS, key=lambda k: h.components[k] * weights.get(k, 0), reverse=True)
@@ -443,27 +457,27 @@ def explain(h: HexScore, weights: dict[str, float]) -> dict:
         if h.components[k] < 60 or weights.get(k, 0) <= 0:
             continue
         if k == "transit_accessibility" and raw["d_transit_m"] is not None:
-            reasons.append(f"Transit stop {_fmt_m(raw['d_transit_m'])} away")
+            reasons.append(f"{_short(raw.get('transit_name')) or 'A train or bus stop'} is {_fmt_m(raw['d_transit_m'])} away")
         elif k == "surrounding_amenities" and raw["d_anchor_m"] is not None:
-            reasons.append(f"Anchor venue {_fmt_m(raw['d_anchor_m'])} away, {raw['n_complementary']} complementary venues")
+            reasons.append(f"Near {_short(raw['anchor_name'])}, {_fmt_m(raw['d_anchor_m'])} away" if raw.get("anchor_name") else f"A uni, mall, office or hospital {_fmt_m(raw['d_anchor_m'])} away")
         elif k == "demographic_match":
-            reasons.append(f"{raw['n_retail']} shops and venues within 300 m")
+            reasons.append(f"Busy street: {raw['n_retail']} shops and venues a short walk away")
         elif k == "market_saturation":
             n = raw["n_competitors"]
-            reasons.append("No direct competitors within 500 m" if n == 0 else f"Only {n} competitor{'s' if n != 1 else ''} within 500 m")
+            reasons.append("No competitors within a 6-minute walk" if n == 0 else f"Only {n} competitor{'s' if n != 1 else ''} within a 6-minute walk")
         elif k == "cannibalisation":
             d = raw["d_cannibal_m"]
             if d is not None:
-                reasons.append(f"Nearest own store {_fmt_m(d)} away")
+                reasons.append(f"Your nearest store is {_fmt_m(d)} away")
         if len(reasons) == 3:
             break
     risks: list[str] = []
     if raw["n_competitors"] >= 4:
-        risks.append(f"{raw['n_competitors']} competitors within 500 m")
+        risks.append(f"{raw['n_competitors']} competitors within a 6-minute walk")
     if raw["d_cannibal_m"] is not None and raw["d_cannibal_m"] < 800:
-        risks.append(f"Own store only {_fmt_m(raw['d_cannibal_m'])} away")
+        risks.append(f"Your own store is only {_fmt_m(raw['d_cannibal_m'])} away")
     if raw["d_transit_m"] is None or raw["d_transit_m"] > 1200:
-        risks.append("Weak public transport access")
+        risks.append("Hard to reach by train or bus")
     return {"reasons": reasons, "risks": risks}
 
 

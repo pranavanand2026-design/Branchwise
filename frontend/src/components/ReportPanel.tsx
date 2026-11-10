@@ -65,7 +65,7 @@ function ReportBody({ r }: { r: HexReport }) {
     <>
       <div className="flex items-start justify-between gap-3 px-5 pt-5">
         <div className="min-w-0">
-          <h2 className="text-[22px] leading-tight font-medium tracking-display truncate">{r.locality ?? "Sydney"}</h2>
+          <h2 className="text-[26px] leading-tight truncate">{r.locality ?? "Sydney"}</h2>
           {sub && <p className="text-sm text-fg-tertiary mt-0.5">{sub}</p>}
         </div>
         <button className="w-9 h-9 grid place-items-center rounded-sm text-fg-tertiary hover:bg-bg-elevated hover:text-fg-primary shrink-0" onClick={() => set({ selectedHex: null })} aria-label="Close report">
@@ -74,64 +74,71 @@ function ReportBody({ r }: { r: HexReport }) {
       </div>
 
       <div className="flex-1 overflow-y-auto px-5 pb-5">
-        <div className="mt-4 flex items-end gap-4">
-          <div className="flex items-baseline gap-1">
-            <span className="text-[56px] leading-none font-medium tabular tracking-display" style={{ color: scoreHex(r.score) }}>{r.score}</span>
-            <span className="text-fg-tertiary text-lg">/100</span>
-          </div>
-          <div className="pb-1.5">
-            <div className="text-[15px] font-medium" style={{ color: scoreHex(r.score) }}>{scoreLabel(r.score)}</div>
-            {r.rank != null && (
-              <div className="text-sm text-fg-tertiary tabular">
-                #{r.rank.toLocaleString()} of {r.rank_total.toLocaleString()} zones
-              </div>
-            )}
-          </div>
-        </div>
+        <span
+          className="mt-3 inline-flex items-center gap-2 h-8 px-3 rounded-full text-[15px] font-medium"
+          style={{ color: scoreHex(r.score), background: `${scoreHex(r.score)}14` }}
+        >
+          <span className="w-2 h-2 rounded-full" style={{ background: scoreHex(r.score) }} aria-hidden="true" />
+          {scoreLabel(r.score)} for your brand
+        </span>
 
-        {(r.reasons.length > 0 || r.risks.length > 0) && (
-          <ul className="mt-5 space-y-2">
-            {r.reasons.map((x) => (
-              <li key={x} className="flex gap-2.5 text-[15px] leading-snug">
-                <Check size={18} className="text-score-high shrink-0 mt-px" aria-hidden="true" />
-                {x}
-              </li>
-            ))}
-            {r.risks.map((x) => (
-              <li key={x} className="flex gap-2.5 text-[15px] leading-snug">
-                <AlertTriangle size={17} className="text-score-mid shrink-0 mt-px" aria-label="Risk" />
-                {x}
-              </li>
-            ))}
-          </ul>
+        {r.reasons.length > 0 && (
+          <section className="mt-5">
+            <h3 className="text-base font-medium font-sans">Why it fits</h3>
+            <ul className="mt-2 space-y-2">
+              {r.reasons.map((x) => (
+                <li key={x} className="flex gap-2.5 text-[15px] leading-snug">
+                  <Check size={18} className="text-score-strong shrink-0 mt-px" aria-hidden="true" />
+                  {x}
+                </li>
+              ))}
+            </ul>
+          </section>
         )}
 
-        <section className="mt-6">
-          <h3 className="label">Score breakdown</h3>
-          <div className="mt-3 space-y-3">
-            {SIGNAL_KEYS.map((k) => (
-              <ScoreBar key={k} name={k} value={r.components[k]} weight={r.weights[k]} />
-            ))}
+        {r.risks.length > 0 && (
+          <section className="mt-5">
+            <h3 className="text-base font-medium font-sans">Worth checking</h3>
+            <ul className="mt-2 space-y-2">
+              {r.risks.map((x) => (
+                <li key={x} className="flex gap-2.5 text-[15px] leading-snug">
+                  <AlertTriangle size={17} className="text-score-weak shrink-0 mt-px" aria-hidden="true" />
+                  {x}
+                </li>
+              ))}
+            </ul>
+          </section>
+        )}
+
+        <NearList title="Competitors nearby" items={r.nearest_competitors} empty="None of your direct competitors within 2 km." />
+        <NearList title="Unis, malls and offices nearby" items={r.nearest_anchors} empty="No unis, malls, offices or hospitals within 3 km." />
+        <NearList title="Stations and stops" items={r.nearest_transit} empty="No station or stop within 2 km." />
+
+        <details className="mt-6 rounded-sm border border-bg-border">
+          <summary className="cursor-pointer select-none px-4 py-3 text-[15px] font-medium text-accent-link">Score details</summary>
+          <div className="px-4 pb-4">
+            <p className="text-sm text-fg-secondary tabular">
+              {r.score} out of 100{r.rank != null && `, #${r.rank.toLocaleString()} of ${r.rank_total.toLocaleString()} areas in Sydney`}
+            </p>
+            <div className="mt-4 space-y-3">
+              {SIGNAL_KEYS.map((k) => (
+                <ScoreBar key={k} name={k} value={r.components[k]} weight={r.weights[k]} />
+              ))}
+            </div>
+            <div className="mt-4 text-sm leading-relaxed text-fg-secondary">
+              <ReactMarkdown
+                components={{
+                  p: ({ children }) => <p className="mb-2 last:mb-0">{children}</p>,
+                  strong: ({ children }) => <strong className="font-medium text-fg-primary">{children}</strong>,
+                  ul: ({ children }) => <ul className="space-y-1">{children}</ul>,
+                  li: ({ children }) => <li>{children}</li>,
+                }}
+              >
+                {r.summary}
+              </ReactMarkdown>
+            </div>
           </div>
-        </section>
-
-        <section className="mt-6 rounded-sm bg-bg-base p-4 text-[15px] leading-relaxed text-fg-secondary">
-          <h3 className="label mb-2">Site summary</h3>
-          <ReactMarkdown
-            components={{
-              p: ({ children }) => <p className="mb-2 last:mb-0 text-fg-primary">{children}</p>,
-              strong: ({ children }) => <strong className="font-medium text-fg-primary">{children}</strong>,
-              ul: ({ children }) => <ul className="space-y-1.5">{children}</ul>,
-              li: ({ children }) => <li>{children}</li>,
-            }}
-          >
-            {r.summary}
-          </ReactMarkdown>
-        </section>
-
-        <NearList title="Nearest competitors" items={r.nearest_competitors} empty="None of your direct competitors within 2 km." />
-        <NearList title="Anchors nearby" items={r.nearest_anchors} empty="No unis, malls, offices or hospitals within 3 km." />
-        <NearList title="Transit" items={r.nearest_transit} empty="No station or stop within 2 km." />
+        </details>
       </div>
 
       <div className="border-t border-bg-border p-4 grid grid-cols-2 gap-2">

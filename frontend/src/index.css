@@ -2,9 +2,17 @@
 @tailwind components;
 @tailwind utilities;
 
-:root {
-  color-scheme: light;
+/* Reglo Bold by Sebastien Sanfilippo, SIL Open Font License (public/fonts/Reglo-OFL.txt).
+   One weight only, so it is used for display type: the logo, headings, buttons, big numbers. */
+@font-face {
+  font-family: "Reglo";
+  src: url("/fonts/Reglo-Bold.woff2") format("woff2");
+  font-weight: 400 900;
+  font-style: normal;
+  font-display: swap;
 }
+
+:root { color-scheme: light; }
 
 *, *::before, *::after { box-sizing: border-box; }
 
@@ -12,20 +20,19 @@ html, body, #root {
   height: 100%;
   margin: 0;
   padding: 0;
-  background: #f8f8f8;
-  color: #0a0a0a;
+  background: #F4FCFB;
+  color: #243C4C;
   font-family: "IBM Plex Sans", system-ui, sans-serif;
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
 }
 
+h1, h2, h3, .font-display { font-family: "Reglo", "IBM Plex Sans", system-ui, sans-serif; font-weight: 400; letter-spacing: -0.01em; }
+
 .tabular { font-variant-numeric: tabular-nums; }
 
 /* one focus ring everywhere, never animated */
-:focus-visible {
-  outline: 2px solid #1f6b3a;
-  outline-offset: 2px;
-}
+:focus-visible { outline: 2px solid #5289AD; outline-offset: 2px; }
 
 @layer components {
   .btn {
@@ -34,7 +41,7 @@ html, body, #root {
       disabled:opacity-50 disabled:pointer-events-none active:translate-y-px;
   }
   .btn-primary { @apply btn bg-accent text-accent-ink hover:bg-accent-hover; }
-  .btn-secondary { @apply btn bg-accent-soft text-accent hover:bg-[#d7e7dc]; }
+  .btn-secondary { @apply btn bg-accent-soft text-accent-link hover:bg-[#d4e5f0]; }
   .btn-quiet { @apply btn bg-transparent text-fg-secondary hover:bg-bg-elevated hover:text-fg-primary; }
   .btn-danger { @apply btn bg-danger text-white hover:bg-[#93201a]; }
   .btn-sm { @apply h-9 px-3.5 text-sm; }
@@ -43,7 +50,7 @@ html, body, #root {
   .field-input {
     @apply w-full h-12 px-3.5 rounded-sm bg-white border border-bg-border text-base text-fg-primary
       placeholder:text-fg-tertiary transition-colors
-      hover:border-[rgba(10,10,10,0.28)] focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/25;
+      hover:border-[rgba(36,60,76,0.32)] focus:border-accent-blue focus:outline-none focus:ring-2 focus:ring-accent-blue/25;
   }
   .field-input[aria-invalid="true"] { @apply border-danger ring-2 ring-danger/15; }
   .field-error { @apply mt-1.5 text-sm text-danger; }
@@ -51,25 +58,39 @@ html, body, #root {
 
   .card { @apply bg-white border border-bg-border rounded-md; }
   .label { @apply text-[13px] font-medium text-fg-tertiary; }
-  .link { @apply text-accent underline decoration-accent/30 underline-offset-[3px] hover:decoration-accent; }
+  .link { @apply text-accent-link underline decoration-accent-link/30 underline-offset-[3px] hover:decoration-accent-link; }
 }
 
 /* MapLibre */
 .maplibregl-canvas { outline: none !important; }
-.maplibregl-map { background: #ebebe8 !important; font-family: inherit; }
+.maplibregl-map { background: #E4EEEE !important; font-family: inherit; }
 .maplibregl-ctrl-attrib { font-size: 11px; }
+/* deck.gl draws in the top-left control corner (z-index 2); keep HTML pins above it */
+.maplibregl-marker { z-index: 3; }
 
 ::-webkit-scrollbar { width: 8px; height: 8px; }
 ::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: rgba(10,10,10,0.14); border-radius: 8px; border: 2px solid transparent; background-clip: padding-box; }
+::-webkit-scrollbar-thumb { background: rgba(36,60,76,0.16); border-radius: 8px; border: 2px solid transparent; background-clip: padding-box; }
 
 .deck-tooltip { background: transparent !important; padding: 0 !important; }
 
-@media (prefers-reduced-motion: reduce) {
-  *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
-}
-
 @keyframes slide { from { transform: translateX(-100%); } to { transform: translateX(300%); } }
 
-/* deck.gl draws in the top-left control corner (z-index 2); keep HTML pins above it */
-.maplibregl-marker { z-index: 3; }
+/* login map: hexes light up in waves, then a pin drops on the best one */
+@keyframes hex-glow {
+  0%, 100% { opacity: var(--o0, .18); }
+  40%      { opacity: var(--o1, .9); }
+}
+@keyframes pin-drop {
+  0%   { transform: translateY(-40px); opacity: 0; }
+  60%  { transform: translateY(4px);   opacity: 1; }
+  100% { transform: translateY(0);     opacity: 1; }
+}
+@keyframes ring-out {
+  from { transform: scale(.4); opacity: .8; }
+  to   { transform: scale(2.4); opacity: 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; }
+}

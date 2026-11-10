@@ -74,8 +74,8 @@ export function CompareMode() {
                     <dt className="text-fg-tertiary">Your nearest store</dt><dd className="text-right tabular">{fmtDist(r.signals_raw.d_cannibal_m)}</dd>
                   </dl>
                   <ul className="mt-4 space-y-1.5 text-sm">
-                    {r.reasons.slice(0, 2).map((x) => <li key={x} className="flex gap-2"><Check size={16} className="text-score-high shrink-0 mt-0.5" aria-hidden="true" />{x}</li>)}
-                    {r.risks.map((x) => <li key={x} className="flex gap-2"><AlertTriangle size={15} className="text-score-mid shrink-0 mt-0.5" aria-label="Risk" />{x}</li>)}
+                    {r.reasons.slice(0, 2).map((x) => <li key={x} className="flex gap-2"><Check size={16} className="text-score-strong shrink-0 mt-0.5" aria-hidden="true" />{x}</li>)}
+                    {r.risks.map((x) => <li key={x} className="flex gap-2"><AlertTriangle size={15} className="text-score-weak shrink-0 mt-0.5" aria-label="Risk" />{x}</li>)}
                   </ul>
                 </article>
               ))}

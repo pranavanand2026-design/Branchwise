@@ -4,7 +4,7 @@ import { ArrowLeft } from "lucide-react";
 import { ApiError, api, type BrandInput, type StoreLoc } from "../lib/api";
 import { useSession } from "../lib/session";
 import { useWorkspace } from "../lib/store";
-import { AreaPicker, BrandBasics, PriorityEditor, StorePicker } from "../components/profile";
+import { AreaPicker, BrandBasics, prioritiesFromTop, PriorityEditor, StorePicker, topFromPriorities, TopPriorities } from "../components/profile";
 import { DataBadge, Logo, Spinner, TextField } from "../components/ui";
 
 const SECTIONS = [
@@ -88,8 +88,18 @@ export function Settings() {
             {save("stores", "Save stores")}
           </Panel>
 
-          <Panel id="priorities" title="Priorities" lead="Change a weight and every score on the map updates.">
-            <PriorityEditor priorities={draft.priorities} hasStores={stores.length > 0} onChange={(p) => setDraft({ ...draft, priorities: p })} />
+          <Panel id="priorities" title="What matters most" lead="Your top three shape every result. Change them and your best areas update.">
+            <TopPriorities
+              value={topFromPriorities(draft.priorities)}
+              hasStores={stores.length > 0}
+              onChange={(top) => setDraft({ ...draft, priorities: prioritiesFromTop(top) })}
+            />
+            <details className="mt-6 group">
+              <summary className="cursor-pointer text-[15px] font-medium text-accent-link select-none">Fine-tune each one</summary>
+              <div className="mt-6">
+                <PriorityEditor priorities={draft.priorities} hasStores={stores.length > 0} onChange={(p) => setDraft({ ...draft, priorities: p })} />
+              </div>
+            </details>
             {save("priorities", "Save priorities")}
           </Panel>
 

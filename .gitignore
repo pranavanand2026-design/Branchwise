@@ -28,3 +28,5 @@ data/app.db-*
 data/dataset.json
 .taste-skill/
 shots/
+data/dataset*.json
+data/prepare.log

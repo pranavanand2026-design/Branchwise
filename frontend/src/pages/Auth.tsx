@@ -3,6 +3,7 @@ import { Link, useNavigate } from "react-router-dom";
 import { ApiError, api } from "../lib/api";
 import { useSession } from "../lib/session";
 import { Logo, Spinner, TextField } from "../components/ui";
+import { HexMapAnimation } from "../components/HexMapAnimation";
 
 type Errors = Partial<Record<"email" | "password" | "full_name" | "form", string>>;
 
@@ -54,13 +55,13 @@ export function AuthPage({ mode }: { mode: "login" | "signup" }) {
         <Logo href="/" />
         <main className="flex-1 flex items-center">
           <div className="w-full max-w-[400px] mx-auto py-12">
-            <h1 className="text-[32px] leading-tight font-medium tracking-display">
+            <h1 className="text-[34px] leading-tight">
               {isSignup ? "Create your Branchwise account" : "Log in to Branchwise"}
             </h1>
             <p className="mt-3 text-fg-secondary text-base leading-relaxed">
               {isSignup
-                ? "Set up your brand in about three minutes and get a ranked list of Sydney sites."
-                : "Pick up your ranked sites and shortlist where you left them."}
+                ? "Answer four quick questions about your brand and see where it fits best in Sydney."
+                : "Pick up your shortlist where you left it."}
             </p>
 
             <form className="mt-8 space-y-5" onSubmit={submit} noValidate>
@@ -122,50 +123,18 @@ export function AuthPage({ mode }: { mode: "login" | "signup" }) {
         </p>
       </div>
 
-      <aside className="hidden lg:flex flex-col justify-end bg-[#0a0a0a] text-[#f8f8f8] p-12 relative overflow-hidden" aria-hidden="true">
-        <HexField />
-        <div className="relative max-w-md">
-          <p className="text-[28px] leading-snug font-medium tracking-display">
-            Every 300 m zone of Greater Sydney, scored for your brand.
+      <aside className="hidden lg:block relative overflow-hidden bg-brand-navy" aria-hidden="true">
+        <div className="absolute inset-0"><HexMapAnimation busy={busy} /></div>
+        <div className="absolute inset-x-0 bottom-0 h-1/2 bg-gradient-to-t from-brand-navy via-brand-navy/80 to-transparent" />
+        <div className="absolute left-12 right-12 bottom-12 max-w-md text-brand-mint">
+          <p className="font-display text-[32px] leading-[1.15]">
+            {busy ? "Sizing up Sydney for you…" : "Know where your next store belongs before you sign anything."}
           </p>
-          <ul className="mt-6 space-y-2 text-[#c9c9c9] text-base">
-            <li>Five signals from Foursquare's open places data</li>
-            <li>Weighted by what you say matters to your stores</li>
-            <li>Ranked, spaced apart, with the reasons beside each site</li>
-          </ul>
+          <p className="mt-4 text-base text-[#C9D6D8]">
+            Tell us about your brand. We look at what's around every corner of Sydney and show you the best fits.
+          </p>
         </div>
       </aside>
     </div>
-  );
-}
-
-/** Decorative hex grid in the score colours. */
-function HexField() {
-  const cols = 9;
-  const rows = 8;
-  const palette = ["#2f8a52", "#2f8a52", "#2f8a52", "#c98317", "#c2473b", "#1c1c1c", "#1c1c1c"];
-  let seed = 7;
-  const rand = () => ((seed = (seed * 9301 + 49297) % 233280) / 233280);
-  const cells = [];
-  for (let r = 0; r < rows; r++) {
-    for (let c = 0; c < cols; c++) {
-      const x = c * 66 + (r % 2 ? 33 : 0);
-      const y = r * 57;
-      const fill = palette[Math.floor(rand() * palette.length)];
-      cells.push(
-        <polygon
-          key={`${r}-${c}`}
-          points="33,0 66,19 66,57 33,76 0,57 0,19"
-          transform={`translate(${x} ${y}) scale(0.94)`}
-          fill={fill}
-          opacity={fill === "#1c1c1c" ? 1 : 0.55}
-        />
-      );
-    }
-  }
-  return (
-    <svg className="absolute -top-6 -right-10 w-[640px] opacity-90" viewBox="0 0 620 480">
-      {cells}
-    </svg>
   );
 }

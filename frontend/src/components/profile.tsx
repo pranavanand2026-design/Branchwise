@@ -37,11 +37,13 @@ export function previewWeights(p: Record<SignalKey, number>): Record<SignalKey, 
 // ─── Brand basics ───────────────────────────────────────────────────────────
 
 export function BrandBasics({
-  draft, onChange, errors,
+  draft, onChange, errors, simple = false,
 }: {
   draft: BrandInput;
   onChange: (d: BrandInput) => void;
   errors: Partial<Record<string, string>>;
+  /** onboarding: name, what you sell and format only */
+  simple?: boolean;
 }) {
   const meta = useSession((s) => s.meta);
   return (
@@ -89,6 +91,7 @@ export function BrandBasics({
         </div>
       </fieldset>
 
+      {!simple && <>
       <fieldset>
         <legend className="field-label">Stores open today</legend>
         <div className="flex flex-wrap gap-2 mt-1">
@@ -100,8 +103,8 @@ export function BrandBasics({
               onClick={() => onChange({ ...draft, store_count_band: b })}
               className={`h-10 min-w-[64px] px-4 rounded-sm border text-[15px] font-medium tabular transition-colors ${
                 draft.store_count_band === b
-                  ? "border-accent bg-accent-soft text-accent"
-                  : "border-bg-border bg-white text-fg-secondary hover:border-[rgba(10,10,10,0.3)]"
+                  ? "border-accent-blue bg-accent-soft text-accent-link"
+                  : "border-bg-border bg-white text-fg-secondary hover:border-[rgba(36,60,76,0.32)]"
               }`}
             >
               {b}
@@ -122,6 +125,7 @@ export function BrandBasics({
         />
         <p className="field-hint">Optional. Who comes in, when, and what they order. Saved to your profile for future features.</p>
       </div>
+      </>}
     </div>
   );
 }
@@ -132,13 +136,13 @@ function ChoiceCard({
   return (
     <label
       className={`relative flex items-start gap-3 p-4 rounded-sm border cursor-pointer transition-[border-color,background-color,transform] hover:-translate-y-px ${
-        checked ? "border-accent bg-accent-soft" : "border-bg-border bg-white hover:border-[rgba(10,10,10,0.3)]"
+        checked ? "border-accent bg-accent-soft" : "border-bg-border bg-white hover:border-[rgba(36,60,76,0.32)]"
       }`}
     >
       <input type="radio" name={name} value={title} checked={checked} onChange={onSelect} className="sr-only" aria-label={`${title}: ${detail}`} />
       <span
         className={`mt-0.5 w-5 h-5 shrink-0 rounded-full border grid place-items-center ${
-          checked ? "border-accent bg-accent" : "border-[rgba(10,10,10,0.3)]"
+          checked ? "border-accent bg-accent" : "border-[rgba(36,60,76,0.32)]"
         }`}
         aria-hidden="true"
       >
@@ -235,7 +239,7 @@ export function StorePicker({
                   aria-pressed={on}
                   className="w-full flex items-center gap-3 px-4 py-3 text-left hover:bg-bg-base transition-colors"
                 >
-                  <span className={`w-5 h-5 shrink-0 rounded-[5px] border grid place-items-center ${on ? "bg-accent border-accent" : "border-[rgba(10,10,10,0.3)]"}`} aria-hidden="true">
+                  <span className={`w-5 h-5 shrink-0 rounded-[5px] border grid place-items-center ${on ? "bg-accent border-accent" : "border-[rgba(36,60,76,0.32)]"}`} aria-hidden="true">
                     {on && <Check size={12} className="text-white" strokeWidth={3} />}
                   </span>
                   <span className="min-w-0">
@@ -315,7 +319,7 @@ export function PriorityEditor({
                     key={i}
                     onClick={() => onChange({ ...priorities, [s.key]: i })}
                     className={`h-11 px-1 rounded-sm border text-[13px] font-medium leading-tight transition-colors ${
-                      on ? "border-accent bg-accent text-white" : "border-bg-border bg-white text-fg-secondary hover:border-[rgba(10,10,10,0.3)]"
+                      on ? "border-accent bg-accent text-white" : "border-bg-border bg-white text-fg-secondary hover:border-[rgba(36,60,76,0.32)]"
                     }`}
                   >
                     {label}
@@ -360,7 +364,7 @@ export function AreaPicker({ regions, onChange }: { regions: string[]; onChange:
           aria-pressed={all}
           onClick={() => onChange([])}
           className={`h-11 px-4 rounded-full border text-[15px] font-medium transition-colors ${
-            all ? "border-accent bg-accent text-white" : "border-bg-border bg-white text-fg-secondary hover:border-[rgba(10,10,10,0.3)]"
+            all ? "border-accent bg-accent text-white" : "border-bg-border bg-white text-fg-secondary hover:border-[rgba(36,60,76,0.32)]"
           }`}
         >
           All of Sydney
@@ -374,7 +378,7 @@ export function AreaPicker({ regions, onChange }: { regions: string[]; onChange:
               aria-pressed={on}
               onClick={() => onChange(on ? regions.filter((x) => x !== r.key) : [...regions, r.key])}
               className={`h-11 px-4 rounded-full border text-[15px] font-medium transition-colors inline-flex items-center gap-2 ${
-                on ? "border-accent bg-accent-soft text-accent" : "border-bg-border bg-white text-fg-secondary hover:border-[rgba(10,10,10,0.3)]"
+                on ? "border-accent-blue bg-accent-soft text-accent-link" : "border-bg-border bg-white text-fg-secondary hover:border-[rgba(36,60,76,0.32)]"
               }`}
             >
               {on && <Check size={15} strokeWidth={2.5} aria-hidden="true" />}
@@ -385,6 +389,67 @@ export function AreaPicker({ regions, onChange }: { regions: string[]; onChange:
       </div>
       <p className="field-hint mt-4">
         Your ranked list sticks to these areas. The map still scores all of Sydney, so you can look anywhere.
+      </p>
+    </div>
+  );
+}
+
+// ─── Top priorities (onboarding: pick up to three) ──────────────────────────
+
+const SIGNAL_COPY: Record<SignalKey, { title: string; detail: string; icon: string }> = {
+  demographic_match: { title: "Busy streets", detail: "Lots of shops and people walking past", icon: "M7 7a2.5 2.5 0 1 0 0-.01M17 8a2 2 0 1 0 0-.01M3 20c.8-3.6 3-5.5 5.5-5.5S13.2 16.4 14 20M14 19.5c.6-2.6 2-4 3.6-4s3 1.4 3.4 4" },
+  surrounding_amenities: { title: "Near unis, malls and offices", detail: "Places that bring a crowd every day", icon: "M3 21h18M5 21V9l7-5 7 5v12M9 21v-6h6v6" },
+  transit_accessibility: { title: "Close to a station", detail: "Customers arrive by train, metro or bus", icon: "M6 3h12a2 2 0 0 1 2 2v9a3 3 0 0 1-3 3H7a3 3 0 0 1-3-3V5a2 2 0 0 1 2-2zM4 10h16M8 21l2-4M16 21l-2-4" },
+  market_saturation: { title: "Few competitors", detail: "Room to be the go-to spot nearby", icon: "M12 3l8 4v6c0 4.4-3.4 7.4-8 8-4.6-.6-8-3.6-8-8V7z" },
+  cannibalisation: { title: "Away from my stores", detail: "Don't take customers off my own shops", icon: "M12 21s-6-5.6-6-10a6 6 0 0 1 12 0c0 4.4-6 10-6 10zM12 11.5a1.5 1.5 0 1 0 0-.01" },
+};
+
+/** Top three = "very important" (4), the rest = "a little" (1). */
+export function prioritiesFromTop(top: SignalKey[]): Record<SignalKey, number> {
+  return Object.fromEntries(SIGNAL_KEYS.map((k) => [k, top.includes(k) ? 4 : 1])) as Record<SignalKey, number>;
+}
+
+export function topFromPriorities(p: Record<SignalKey, number>): SignalKey[] {
+  return SIGNAL_KEYS.filter((k) => (p[k] ?? 0) >= 3).sort((a, b) => p[b] - p[a]).slice(0, 3);
+}
+
+export function TopPriorities({
+  value, onChange, hasStores,
+}: { value: SignalKey[]; onChange: (v: SignalKey[]) => void; hasStores: boolean }) {
+  const keys = SIGNAL_KEYS.filter((k) => hasStores || k !== "cannibalisation");
+  const full = value.length >= 3;
+  return (
+    <div>
+      <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3" role="group" aria-label="What matters most">
+        {keys.map((k) => {
+          const on = value.includes(k);
+          const c = SIGNAL_COPY[k];
+          const disabled = !on && full;
+          return (
+            <button
+              type="button"
+              key={k}
+              aria-pressed={on}
+              disabled={disabled}
+              onClick={() => onChange(on ? value.filter((x) => x !== k) : [...value, k])}
+              className={`relative text-left p-5 rounded-md border transition-[border-color,background-color,transform,opacity] ${
+                on ? "border-accent-blue bg-accent-soft" : "border-bg-border bg-white hover:-translate-y-px hover:border-[rgba(36,60,76,0.32)]"
+              } ${disabled ? "opacity-45 cursor-not-allowed hover:translate-y-0" : ""}`}
+            >
+              <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke={on ? "#2E6A93" : "#243C4C"} strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d={c.icon} /></svg>
+              <span className="block mt-3 font-display text-lg text-fg-primary">{c.title}</span>
+              <span className="block mt-1 text-sm text-fg-tertiary">{c.detail}</span>
+              {on && (
+                <span className="absolute top-4 right-4 w-6 h-6 rounded-full bg-accent text-white grid place-items-center text-[13px] font-medium tabular" aria-hidden="true">
+                  {value.indexOf(k) + 1}
+                </span>
+              )}
+            </button>
+          );
+        })}
+      </div>
+      <p className="mt-4 text-sm text-fg-tertiary" aria-live="polite">
+        {value.length === 0 ? "Pick up to three." : full ? "That's three. Tap one to swap it." : `${3 - value.length} more if you like.`}
       </p>
     </div>
   );
