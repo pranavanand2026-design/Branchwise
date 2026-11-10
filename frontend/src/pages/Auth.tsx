@@ -3,7 +3,6 @@ import { Link, useNavigate } from "react-router-dom";
 import { ApiError, api } from "../lib/api";
 import { useSession } from "../lib/session";
 import { Logo, Spinner, TextField } from "../components/ui";
-import { HexMapAnimation } from "../components/HexMapAnimation";
 
 type Errors = Partial<Record<"email" | "password" | "full_name" | "form", string>>;
 
@@ -121,14 +120,28 @@ export function AuthPage({ mode }: { mode: "login" | "signup" }) {
       </div>
 
       <aside className="hidden lg:block relative overflow-hidden bg-brand-navy" aria-hidden="true">
-        <div className="absolute inset-0"><HexMapAnimation busy={busy} /></div>
-        <div className="absolute inset-x-0 bottom-0 h-1/2 bg-gradient-to-t from-brand-navy via-brand-navy/80 to-transparent" />
+        {/* square map image, centred and always covering the panel; the pin sits on the CBD */}
+        <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 aspect-square min-w-full min-h-full">
+          <img src="/img/login-map.jpg" alt="" className="absolute inset-0 w-full h-full" />
+          <div className="absolute" style={{ left: "65.7%", top: "47%" }}>
+            <span
+              className="absolute -left-8 -top-8 w-16 h-16 rounded-full border-[3px] border-brand-navy"
+              style={{ animation: `ring-out ${busy ? 0.9 : 2.4}s ease-out 1.4s infinite`, opacity: 0 }}
+            />
+            <svg width="44" height="58" viewBox="0 0 30 40" className="absolute -left-[22px] -top-[56px] drop-shadow-lg"
+              style={{ animation: "pin-drop 900ms cubic-bezier(.2,.9,.3,1.2) .5s both" }}>
+              <path d="M15 1a14 14 0 0 1 14 14c0 11-14 24-14 24S1 26 1 15A14 14 0 0 1 15 1z" fill="#243C4C" />
+              <circle cx="15" cy="15" r="5.5" fill="#F4FCFB" />
+            </svg>
+          </div>
+        </div>
+        <div className="absolute inset-0 bg-gradient-to-t from-brand-navy via-brand-navy/40 to-brand-navy/5" />
         <div className="absolute left-12 right-12 bottom-12 max-w-md text-brand-mint">
           <p className="font-display text-[32px] leading-[1.15]">
             {busy ? "Sizing up Sydney for you…" : "Know where your next store belongs before you sign anything."}
           </p>
-          <p className="mt-4 text-base text-[#C9D6D8]">
-            Tell us about your brand. We look at what's around every corner of Sydney and show you the best fits.
+          <p className="mt-4 text-base text-[#D4E0E2]">
+            Every corner of Sydney, scored for your brand. Green is where you fit best.
           </p>
         </div>
       </aside>

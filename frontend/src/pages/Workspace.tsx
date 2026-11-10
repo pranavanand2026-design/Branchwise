@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { ChevronDown, ChevronLeft, ChevronRight, Columns3, Layers, ListOrdered, LogOut, Map as MapIcon, Settings as SettingsIcon, Sparkles } from "lucide-react";
+import { ChevronDown, ChevronLeft, ChevronRight, Columns3, Layers, ListOrdered, Map as MapIcon } from "lucide-react";
 import { api } from "../lib/api";
 import { useSession, verticalLabel } from "../lib/session";
 import { useWorkspace, type Layer } from "../lib/store";
@@ -10,6 +10,7 @@ import { CompareMode } from "../components/CompareMode";
 import { SitePanel } from "../components/SitePanel";
 import { Tour, type TourStep } from "../components/Tour";
 import { DataBadge, Logo } from "../components/ui";
+import { ProfileMenu } from "../components/ProfileMenu";
 
 export function Workspace() {
   const nav = useNavigate();
@@ -80,8 +81,8 @@ export function Workspace() {
     },
     {
       target: "settings",
-      title: "Change your mind any time",
-      body: "Update your stores, what matters most or where you'd open in Settings. Your best areas update straight away.",
+      title: "Your account",
+      body: "Your account menu has Settings, where you can change your stores, what matters most or where you'd open. You can replay this tour from there too.",
       before: () => ws.set({ selectedHex: null }),
     },
   ];
@@ -104,17 +105,9 @@ export function Workspace() {
             <span className="text-[15px] font-medium truncate max-w-[200px]">{brand.name}</span>
             <ChevronDown size={15} className="text-fg-tertiary shrink-0" aria-hidden="true" />
           </Link>
-          <div className="ml-auto flex items-center gap-1.5">
+          <div className="ml-auto flex items-center gap-3">
             <DataBadge />
-            <button className="btn-quiet btn-sm hidden md:inline-flex" onClick={() => setTourOpen(true)}>
-              <Sparkles size={16} aria-hidden="true" /> Tour
-            </button>
-            <Link to="/settings" className="btn-quiet btn-sm" data-tour="settings">
-              <SettingsIcon size={16} aria-hidden="true" /> <span className="hidden sm:inline">Settings</span>
-            </Link>
-            <button className="btn-quiet btn-sm" onClick={() => void logout().then(() => { ws.reset(); nav("/login"); })} aria-label="Log out">
-              <LogOut size={16} aria-hidden="true" /> <span className="hidden lg:inline">Log out</span>
-            </button>
+            <ProfileMenu onTour={() => setTourOpen(true)} onLogout={() => void logout().then(() => { ws.reset(); nav("/login"); })} />
           </div>
         </div>
       </header>
@@ -147,7 +140,9 @@ export function Workspace() {
           {ws.panelOpen ? <span className="sr-only">Hide best areas</span> : "Best areas"}
         </button>
 
-        <main className={`flex-1 min-w-0 relative ${mobileView === "map" ? "block" : "hidden"} md:block`}>
+        {/* On a phone the map stays laid out behind the list (never display:none):
+            a zero-size map breaks the hex layer, which needs a real viewport. */}
+        <main className={`flex-1 min-w-0 relative ${mobileView === "map" ? "" : "max-md:absolute max-md:inset-0 max-md:opacity-0 max-md:pointer-events-none max-md:-z-10"}`}>
           <MapView onOpenSite={openSite} />
           <LayerToggles />
           <ReportPanel />
