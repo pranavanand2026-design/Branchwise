@@ -31,7 +31,13 @@ except Exception:  # pragma: no cover
     OpenAI = None  # type: ignore
 
 from .db import get_config
-from .scoring import WEIGHTS, apply_scenario_weights, hex_report, score_hexes
+from .scoring import WEIGHTS, Profile, apply_scenario_weights, hex_report, score_hexes, stores_from_brand_slug
+
+
+def _legacy_report(vertical: str, h3_id: str, brand_slug: str | None = None) -> dict:
+    rep = hex_report(Profile(vertical=vertical, stores=stores_from_brand_slug(brand_slug)), h3_id)
+    rep.setdefault("ai_insight", rep.get("summary"))
+    return rep
 
 CLAUDE_MODEL = os.environ.get("CLAUDE_MODEL", "claude-sonnet-4-5")
 OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
@@ -199,7 +205,7 @@ def _run_filter_locations(**kwargs) -> dict:
 
 
 def _run_generate_insight(**kwargs) -> dict:
-    return hex_report(kwargs["vertical"], kwargs["h3_id"], brand_slug=kwargs.get("brand_slug"))
+    return _legacy_report(kwargs["vertical"], kwargs["h3_id"], brand_slug=kwargs.get("brand_slug"))
 
 
 TOOL_IMPLS = {
@@ -499,7 +505,7 @@ def _offline_fallback(user_message: str, error: str | None = None) -> dict:
     top = out["results"][0] if out["results"] else None
 
     if top:
-        report = hex_report(vertical, top["h3_id"])
+        report = _legacy_report(vertical, top["h3_id"])
         anchor = report["nearest_anchors"][0] if report["nearest_anchors"] else None
         transit = report["nearest_transit"][0] if report["nearest_transit"] else None
         competitors = report["signals_raw"]["n_competitors"]
