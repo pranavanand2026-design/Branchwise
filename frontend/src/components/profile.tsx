@@ -1,5 +1,6 @@
 // Brand-profile editors, shared by onboarding and settings.
 import { useEffect, useMemo, useState } from "react";
+import { AreaMap } from "./AreaMap";
 import { Check, MapPin, Search, X } from "lucide-react";
 import {
   api, SIGNAL_KEYS,
@@ -189,104 +190,98 @@ export function StorePicker({
     };
   }, [q]);
 
-  const toggle = (p: Place) => {
-    if (selectedIds.has(p.fsq_place_id)) onChange(stores.filter((s) => s.fsq_place_id !== p.fsq_place_id));
-    else onChange([...stores, { name: p.name, lat: p.lat, lng: p.lng, locality: p.locality, fsq_place_id: p.fsq_place_id }]);
-  };
-  const unselected = results.filter((p) => !selectedIds.has(p.fsq_place_id));
+  const add = (p: Place) =>
+    onChange([...stores, { name: p.name, lat: p.lat, lng: p.lng, locality: p.locality, fsq_place_id: p.fsq_place_id }]);
+  const remove = (id: string | null | undefined, i: number) =>
+    onChange(stores.filter((s, j) => (id ? s.fsq_place_id !== id : j !== i)));
+  const notAdded = results.filter((p) => !selectedIds.has(p.fsq_place_id));
 
   return (
-    <div className="grid gap-6 lg:grid-cols-2">
-      <div>
-        <label htmlFor="store-q" className="field-label">Search Sydney places by name</label>
-        <div className="relative">
-          <Search size={18} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-fg-tertiary" aria-hidden="true" />
-          <input
-            id="store-q"
-            className="field-input pl-10"
-            value={q}
-            onChange={(e) => setQ(e.target.value)}
-            autoComplete="off"
-            maxLength={60}
-          />
-          {busy && <Spinner className="absolute right-3.5 top-1/2 -translate-y-1/2 text-fg-tertiary" />}
-        </div>
-        {err && <p className="field-error">{err}</p>}
-        <div className="mt-3 flex items-center justify-between">
-          <span className="label" aria-live="polite">
-            {q.trim().length < 2 ? "Type at least two letters" : `${results.length} place${results.length === 1 ? "" : "s"} found`}
-          </span>
-          {unselected.length > 1 && (
-            <button type="button" className="text-sm font-medium link" onClick={() => onChange([
-              ...stores,
-              ...unselected.map((p) => ({ name: p.name, lat: p.lat, lng: p.lng, locality: p.locality, fsq_place_id: p.fsq_place_id })),
-            ])}>
-              Add all {unselected.length}
-            </button>
-          )}
-        </div>
-        <ul className="mt-2 max-h-[340px] overflow-y-auto rounded-sm border border-bg-border bg-white divide-y divide-bg-border">
-          {results.length === 0 && q.trim().length >= 2 && !busy && (
-            <li className="p-4 text-sm text-fg-tertiary">No places with that name. Try a shorter spelling.</li>
-          )}
-          {results.map((p) => {
-            const on = selectedIds.has(p.fsq_place_id);
-            return (
-              <li key={p.fsq_place_id}>
-                <button
-                  type="button"
-                  onClick={() => toggle(p)}
-                  aria-pressed={on}
-                  className="w-full flex items-center gap-3 px-4 py-3 text-left hover:bg-bg-base transition-colors"
-                >
-                  <span className={`w-5 h-5 shrink-0 rounded-[5px] border grid place-items-center ${on ? "bg-accent border-accent" : "border-[rgba(36,60,76,0.32)]"}`} aria-hidden="true">
-                    {on && <Check size={12} className="text-white" strokeWidth={3} />}
-                  </span>
-                  <span className="min-w-0">
-                    <span className="block text-[15px] text-fg-primary truncate">{p.name}</span>
-                    <span className="block text-sm text-fg-tertiary truncate">
-                      {[p.locality, p.primary_category].filter(Boolean).join(" · ")}
-                    </span>
-                  </span>
-                </button>
-              </li>
-            );
-          })}
-        </ul>
-      </div>
-
-      <div>
-        <div className="flex items-baseline justify-between">
-          <span className="field-label">Your stores</span>
-          <span className="label tabular">{stores.length} added</span>
-        </div>
-        {stores.length === 0 ? (
-          <div className="rounded-sm border border-dashed border-[rgba(10,10,10,0.2)] p-6 text-sm text-fg-tertiary leading-relaxed">
-            Pick your stores from the search results. Branchwise uses them to keep new sites from taking
-            customers off your own shops. Opening your first store? Leave this empty.
-          </div>
-        ) : (
-          <ul className="rounded-sm border border-bg-border bg-white divide-y divide-bg-border max-h-[396px] overflow-y-auto">
+    <div className="max-w-[720px]">
+      {stores.length > 0 && (
+        <div className="mb-8">
+          <p className="text-sm font-medium text-fg-primary">
+            Your stores <span className="text-fg-tertiary tabular">· {stores.length}</span>
+          </p>
+          <ul className="mt-3 flex flex-wrap gap-2">
             {stores.map((s, i) => (
-              <li key={s.fsq_place_id ?? `${s.lat},${s.lng},${i}`} className="flex items-center gap-3 px-4 py-3">
-                <MapPin size={16} className="text-accent shrink-0" aria-hidden="true" />
-                <span className="min-w-0 flex-1">
-                  <span className="block text-[15px] truncate">{s.name}</span>
-                  <span className="block text-sm text-fg-tertiary truncate">{s.locality ?? "Sydney"}</span>
-                </span>
+              <li key={s.fsq_place_id ?? `${s.lat},${s.lng},${i}`}
+                className="inline-flex items-center gap-1.5 h-9 pl-3 pr-1 rounded-full bg-brand-navy text-brand-mint text-sm">
+                <MapPin size={14} aria-hidden="true" />
+                <span className="truncate max-w-[220px]">{s.locality ?? s.name}</span>
                 <button
                   type="button"
-                  onClick={() => onChange(stores.filter((_, j) => j !== i))}
-                  className="w-9 h-9 grid place-items-center rounded-sm text-fg-tertiary hover:text-fg-primary hover:bg-bg-elevated"
-                  aria-label={`Remove ${s.name}`}
+                  onClick={() => remove(s.fsq_place_id, i)}
+                  className="w-7 h-7 grid place-items-center rounded-full hover:bg-white/15"
+                  aria-label={`Remove ${s.name}${s.locality ? `, ${s.locality}` : ""}`}
                 >
-                  <X size={16} />
+                  <X size={14} />
                 </button>
               </li>
             ))}
           </ul>
-        )}
+        </div>
+      )}
+
+      <label htmlFor="store-q" className="field-label">Find your stores</label>
+      <div className="relative">
+        <Search size={18} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-fg-tertiary" aria-hidden="true" />
+        <input
+          id="store-q"
+          className="field-input pl-10"
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+          autoComplete="off"
+          maxLength={60}
+          placeholder="Search by name"
+        />
+        {busy && <Spinner className="absolute right-3.5 top-1/2 -translate-y-1/2 text-fg-tertiary" />}
       </div>
+      {err && <p className="field-error">{err}</p>}
+
+      {q.trim().length >= 2 && (
+        <div className="mt-4">
+          <div className="flex items-center justify-between h-8">
+            <span className="text-sm text-fg-tertiary" aria-live="polite">
+              {busy ? "Searching…" : results.length === 0 ? "No Sydney places with that name. Try a shorter spelling." : `${results.length} match${results.length === 1 ? "" : "es"} in Sydney`}
+            </span>
+            {notAdded.length > 1 && (
+              <button type="button" className="text-sm font-medium link" onClick={() => onChange([
+                ...stores,
+                ...notAdded.map((p) => ({ name: p.name, lat: p.lat, lng: p.lng, locality: p.locality, fsq_place_id: p.fsq_place_id })),
+              ])}>
+                Add all {notAdded.length}
+              </button>
+            )}
+          </div>
+          {results.length > 0 && (
+            <ul className="mt-2 max-h-[360px] overflow-y-auto">
+              {results.map((p) => {
+                const on = selectedIds.has(p.fsq_place_id);
+                return (
+                  <li key={p.fsq_place_id} className="flex items-center gap-3 py-2.5 border-b border-bg-border last:border-b-0">
+                    <span className="min-w-0 flex-1">
+                      <span className="block text-[15px] text-fg-primary truncate">{p.name}</span>
+                      <span className="block text-sm text-fg-tertiary truncate">
+                        {[p.address, p.locality].filter(Boolean).join(", ") || p.primary_category}
+                      </span>
+                    </span>
+                    {on ? (
+                      <button type="button" className="btn-sm btn bg-accent-soft text-accent-link" onClick={() => remove(p.fsq_place_id, -1)} aria-label={`Remove ${p.name}`}>
+                        <Check size={15} aria-hidden="true" /> Added
+                      </button>
+                    ) : (
+                      <button type="button" className="btn-sm btn-secondary" onClick={() => add(p)} aria-label={`Add ${p.name}${p.locality ? `, ${p.locality}` : ""}`}>
+                        Add
+                      </button>
+                    )}
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -353,43 +348,88 @@ export function PriorityEditor({
 
 // ─── Areas ──────────────────────────────────────────────────────────────────
 
+function circlePolygon(lat: number, lng: number, km: number, steps = 64): [number, number][] {
+  const out: [number, number][] = [];
+  const dLat = km / 110.574;
+  const dLng = km / (111.32 * Math.cos((lat * Math.PI) / 180));
+  for (let i = 0; i <= steps; i++) {
+    const t = (i / steps) * 2 * Math.PI;
+    out.push([lng + dLng * Math.cos(t), lat + dLat * Math.sin(t)]);
+  }
+  return out;
+}
+
 export function AreaPicker({ regions, onChange }: { regions: string[]; onChange: (r: string[]) => void }) {
   const meta = useSession((s) => s.meta);
+  const [hover, setHover] = useState<string | null>(null);
   const all = regions.length === 0;
+  const list = meta?.regions ?? [];
+  const toggle = (k: string) => onChange(regions.includes(k) ? regions.filter((x) => x !== k) : [...regions, k]);
+
+  const geojson = useMemo(
+    () => ({
+      type: "FeatureCollection" as const,
+      features: list.map((r) => ({
+        type: "Feature" as const,
+        id: r.key,
+        properties: {
+          key: r.key,
+          state: regions.includes(r.key) ? "on" : all ? "all" : "off",
+          hover: hover === r.key ? 1 : 0,
+        },
+        geometry: { type: "Polygon" as const, coordinates: [circlePolygon(r.lat, r.lng, r.radius_km)] },
+      })),
+    }),
+    [list, regions, all, hover]
+  );
+
   return (
-    <div>
-      <div className="flex flex-wrap gap-2">
+    <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_320px]">
+      <div className="relative h-[360px] sm:h-[460px] rounded-md overflow-hidden border border-bg-border bg-bg-elevated">
+        <AreaMap
+          geojson={geojson}
+          onPick={toggle}
+          onHover={setHover}
+          labels={list.map((r) => ({ key: r.key, label: r.label, lat: r.lat, lng: r.lng, on: regions.includes(r.key) }))}
+        />
+      </div>
+
+      <div>
         <button
           type="button"
           aria-pressed={all}
           onClick={() => onChange([])}
-          className={`h-11 px-4 rounded-full border text-[15px] font-medium transition-colors ${
-            all ? "border-accent bg-accent text-white" : "border-bg-border bg-white text-fg-secondary hover:border-[rgba(36,60,76,0.32)]"
+          className={`w-full flex items-center gap-3 h-12 px-4 rounded-sm border text-left text-[15px] font-medium transition-colors ${
+            all ? "border-accent-blue bg-accent-soft text-fg-primary" : "border-bg-border bg-white text-fg-secondary hover:border-[rgba(36,60,76,0.32)]"
           }`}
         >
+          <span className={`w-5 h-5 rounded-full border grid place-items-center ${all ? "bg-accent border-accent" : "border-[rgba(36,60,76,0.32)]"}`} aria-hidden="true">
+            {all && <Check size={12} className="text-white" strokeWidth={3} />}
+          </span>
           All of Sydney
         </button>
-        {meta?.regions.map((r) => {
-          const on = regions.includes(r.key);
-          return (
-            <button
-              type="button"
-              key={r.key}
-              aria-pressed={on}
-              onClick={() => onChange(on ? regions.filter((x) => x !== r.key) : [...regions, r.key])}
-              className={`h-11 px-4 rounded-full border text-[15px] font-medium transition-colors inline-flex items-center gap-2 ${
-                on ? "border-accent-blue bg-accent-soft text-accent-link" : "border-bg-border bg-white text-fg-secondary hover:border-[rgba(36,60,76,0.32)]"
-              }`}
-            >
-              {on && <Check size={15} strokeWidth={2.5} aria-hidden="true" />}
-              {r.label}
-            </button>
-          );
-        })}
+        <p className="mt-4 mb-2 text-sm text-fg-tertiary">Or pick the areas you'd consider</p>
+        <ul className="space-y-1">
+          {list.map((r) => {
+            const on = regions.includes(r.key);
+            return (
+              <li key={r.key}>
+                <label
+                  className={`flex items-center gap-3 h-11 px-3 rounded-sm cursor-pointer transition-colors ${on ? "bg-accent-soft" : hover === r.key ? "bg-bg-base" : "hover:bg-bg-base"}`}
+                  onMouseEnter={() => setHover(r.key)}
+                  onMouseLeave={() => setHover(null)}
+                >
+                  <input type="checkbox" className="w-4 h-4 accent-[#243C4C]" checked={on} onChange={() => toggle(r.key)} />
+                  <span className="text-[15px]">{r.label}</span>
+                </label>
+              </li>
+            );
+          })}
+        </ul>
+        <p className="mt-4 text-sm text-fg-tertiary">
+          Your best areas stick to these. The map still covers all of Sydney, so you can look anywhere.
+        </p>
       </div>
-      <p className="field-hint mt-4">
-        Your ranked list sticks to these areas. The map still scores all of Sydney, so you can look anywhere.
-      </p>
     </div>
   );
 }

@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { Bookmark, ChevronDown, Trash2 } from "lucide-react";
 import { api, type RankedSite, type SavedSite } from "../lib/api";
-import { scoreHex, scoreLabel } from "../lib/colors";
+import { scoreFill, scoreHex, scoreLabel } from "../lib/colors";
 import { useSession } from "../lib/session";
 import { useWorkspace } from "../lib/store";
 import { Segmented, Spinner } from "./ui";
@@ -110,12 +110,17 @@ function Chip({ on, onClick, children }: { on: boolean; onClick: () => void; chi
   );
 }
 
-function FitChip({ score }: { score: number }) {
+/** The score on a small hex, filled in the map's colour for that score. */
+function ScoreBadge({ score }: { score: number }) {
   return (
-    <span className="inline-flex items-center gap-1.5 h-6 px-2.5 rounded-full text-[13px] font-medium whitespace-nowrap"
-      style={{ color: scoreHex(score), background: `${scoreHex(score)}14` }}>
-      <span className="w-1.5 h-1.5 rounded-full" style={{ background: scoreHex(score) }} aria-hidden="true" />
-      {scoreLabel(score)}
+    <span className="relative shrink-0 grid place-items-center w-11 h-12" title={`${score}/100 · ${scoreLabel(score)}`}>
+      <svg viewBox="0 0 44 48" className="absolute inset-0 w-full h-full" aria-hidden="true">
+        <path d="M22 1.5 41.5 12.75v22.5L22 46.5 2.5 35.25v-22.5z" fill={scoreFill(score)} fillOpacity="0.18" stroke={scoreFill(score)} strokeWidth="2" />
+      </svg>
+      <span className="relative font-display text-[17px] leading-none tabular" style={{ color: scoreHex(score) }}>
+        {score}
+        <span className="sr-only"> out of 100, {scoreLabel(score)}</span>
+      </span>
     </span>
   );
 }
@@ -132,8 +137,8 @@ function RankedRow({ s, onOpen }: { s: RankedSite; onOpen: (h3: string, lat: num
       onMouseEnter={() => set({ hoveredHex: s.h3_id })}
       onMouseLeave={() => set({ hoveredHex: null })}
     >
-      <button className="w-full text-left px-4 py-3.5 flex items-start gap-3" onClick={() => onOpen(s.h3_id, s.lat, s.lng)} aria-current={active ? "true" : undefined}>
-        <span className="w-7 h-7 shrink-0 grid place-items-center rounded-full bg-brand-navy text-white text-[13px] font-medium tabular mt-0.5">{s.rank}</span>
+      <button className="w-full text-left px-4 py-3 flex items-center gap-3" onClick={() => onOpen(s.h3_id, s.lat, s.lng)} aria-current={active ? "true" : undefined}>
+        <span className="w-5 shrink-0 text-[13px] font-medium text-fg-tertiary tabular text-right">{s.rank}</span>
         <span className="flex-1 min-w-0">
           <span className="flex items-center gap-2">
             <span className="font-display text-[17px] truncate">{s.locality ?? "Sydney"}</span>
@@ -141,7 +146,7 @@ function RankedRow({ s, onOpen }: { s: RankedSite; onOpen: (h3: string, lat: num
           </span>
           {why && <span className="block mt-0.5 text-sm text-fg-secondary leading-snug line-clamp-2">{why}</span>}
         </span>
-        <FitChip score={s.score} />
+        <ScoreBadge score={s.score} />
       </button>
     </li>
   );
@@ -181,7 +186,7 @@ function ShortlistView({ onOpen }: { onOpen: (h3: string, lat: number, lng: numb
                   {drift !== 0 && ` · fit has changed`}
                 </span>
               </button>
-              <FitChip score={score} />
+              <ScoreBadge score={score} />
               <input
                 type="checkbox"
                 className="w-4 h-4 accent-[#243C4C]"

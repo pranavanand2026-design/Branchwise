@@ -3,7 +3,7 @@ import ReactMarkdown from "react-markdown";
 import { AnimatePresence, motion } from "framer-motion";
 import { AlertTriangle, Bookmark, BookmarkCheck, Check, Columns3, X } from "lucide-react";
 import { api, SIGNAL_KEYS, type HexReport, type NearPoi } from "../lib/api";
-import { fmtDist, scoreHex, scoreLabel } from "../lib/colors";
+import { fmtDist, scoreFill, scoreHex, scoreLabel } from "../lib/colors";
 import { useWorkspace } from "../lib/store";
 import { ScoreBar } from "./ScoreBar";
 import { Spinner } from "./ui";
@@ -76,10 +76,10 @@ function ReportBody({ r }: { r: HexReport }) {
       <div className="flex-1 overflow-y-auto px-5 pb-5">
         <span
           className="mt-3 inline-flex items-center gap-2 h-8 px-3 rounded-full text-[15px] font-medium"
-          style={{ color: scoreHex(r.score), background: `${scoreHex(r.score)}14` }}
+          style={{ color: scoreHex(r.score), background: `${scoreFill(r.score)}22` }}
         >
-          <span className="w-2 h-2 rounded-full" style={{ background: scoreHex(r.score) }} aria-hidden="true" />
-          {scoreLabel(r.score)} for your brand
+          <span className="w-2 h-2 rounded-full" style={{ background: scoreFill(r.score) }} aria-hidden="true" />
+          <span><span className="font-display tabular">{r.score}</span>/100 · {scoreLabel(r.score)}</span>
         </span>
 
         {r.reasons.length > 0 && (

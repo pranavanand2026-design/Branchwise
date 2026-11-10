@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { Columns3, Layers, ListOrdered, LogOut, Map as MapIcon, Settings as SettingsIcon, Sparkles } from "lucide-react";
+import { ChevronDown, ChevronLeft, ChevronRight, Columns3, Layers, ListOrdered, LogOut, Map as MapIcon, Settings as SettingsIcon, Sparkles } from "lucide-react";
 import { api } from "../lib/api";
 import { useSession, verticalLabel } from "../lib/session";
 import { useWorkspace, type Layer } from "../lib/store";
@@ -61,7 +61,7 @@ export function Workspace() {
     {
       target: "map",
       title: "The whole city at a glance",
-      body: "Darker blue means a better fit for your brand. The numbered pins are your top ten; the dark pins are your own stores.",
+      body: "Green areas suit your brand best, amber are mixed, red are weak. The numbered pins are your top ten; the dark pins are your own stores.",
       before: () => setMobileView("map"),
     },
     {
@@ -93,11 +93,17 @@ export function Workspace() {
       <header className="h-14 shrink-0 bg-white border-b border-bg-border">
         <div className="h-full px-4 flex items-center gap-4">
           <Logo href="/" size={18} />
-          <span className="hidden sm:block w-px h-6 bg-bg-border" aria-hidden="true" />
-          <div className="hidden sm:flex min-w-0 items-baseline gap-2">
-            <span className="font-medium truncate">{brand.name}</span>
-            <span className="text-sm text-fg-tertiary truncate">{verticalLabel(meta, brand.vertical)} · {brand.stores.length} store{brand.stores.length === 1 ? "" : "s"}</span>
-          </div>
+          <Link
+            to="/settings"
+            className="hidden sm:inline-flex items-center gap-2 h-9 pl-1.5 pr-3 ml-2 rounded-full border border-bg-border bg-white hover:bg-bg-base transition-colors min-w-0"
+            title={`${brand.name} · ${verticalLabel(meta, brand.vertical)} · edit in Settings`}
+          >
+            <span className="w-6 h-6 shrink-0 rounded-full bg-brand-navy text-brand-mint grid place-items-center font-display text-[13px]" aria-hidden="true">
+              {brand.name.trim().charAt(0).toUpperCase()}
+            </span>
+            <span className="text-[15px] font-medium truncate max-w-[200px]">{brand.name}</span>
+            <ChevronDown size={15} className="text-fg-tertiary shrink-0" aria-hidden="true" />
+          </Link>
           <div className="ml-auto flex items-center gap-1.5">
             <DataBadge />
             <button className="btn-quiet btn-sm hidden md:inline-flex" onClick={() => setTourOpen(true)}>
@@ -115,11 +121,31 @@ export function Workspace() {
 
       <div className="flex-1 min-h-0 flex relative">
         <aside
-          className={`w-full md:w-[380px] shrink-0 bg-white border-r border-bg-border min-h-0 ${mobileView === "list" ? "block" : "hidden"} md:block`}
-          aria-label="Sites"
+          id="sites-panel"
+          className={`w-full shrink-0 bg-white min-h-0 overflow-hidden md:transition-[width] md:duration-300 ${
+            ws.panelOpen ? "md:w-[380px] md:border-r md:border-bg-border" : "md:w-0"
+          } ${mobileView === "list" ? "block" : "hidden"} md:block`}
+          aria-label="Best areas"
         >
-          <SitePanel onOpenSite={openSite} />
+          <div className="h-full w-full md:w-[380px]">
+            <SitePanel onOpenSite={openSite} />
+          </div>
         </aside>
+
+        {/* collapse / expand the list (desktop) */}
+        <button
+          onClick={() => {
+            ws.set({ panelOpen: !ws.panelOpen });
+            setTimeout(() => window.dispatchEvent(new Event("resize")), 320);
+          }}
+          aria-expanded={ws.panelOpen}
+          aria-controls="sites-panel"
+          className="hidden md:flex absolute top-3 z-20 h-10 items-center gap-1.5 pl-2 pr-3 rounded-r-full bg-white border border-l-0 border-bg-border shadow-panel text-sm font-medium text-fg-secondary hover:text-fg-primary transition-[left] duration-300"
+          style={{ left: ws.panelOpen ? 380 : 0 }}
+        >
+          {ws.panelOpen ? <ChevronLeft size={18} aria-hidden="true" /> : <ChevronRight size={18} aria-hidden="true" />}
+          {ws.panelOpen ? <span className="sr-only">Hide best areas</span> : "Best areas"}
+        </button>
 
         <main className={`flex-1 min-w-0 relative ${mobileView === "map" ? "block" : "hidden"} md:block`}>
           <MapView onOpenSite={openSite} />
@@ -128,7 +154,7 @@ export function Workspace() {
         </main>
 
         {ws.compareIds.length > 0 && !ws.compareOpen && (
-          <div className="absolute bottom-20 md:bottom-5 left-1/2 -translate-x-1/2 md:left-[calc(380px+(100%-380px)/2)] z-30 flex items-center gap-3 h-12 pl-4 pr-1.5 rounded-full bg-fg-primary text-white shadow-pop">
+          <div className={`absolute bottom-20 md:bottom-5 left-1/2 -translate-x-1/2 z-30 flex items-center gap-3 h-12 pl-4 pr-1.5 rounded-full bg-fg-primary text-white shadow-pop ${ws.panelOpen ? "md:left-[calc(380px+(100%-380px)/2)]" : ""}`}>
             <span className="text-sm tabular">{ws.compareIds.length} of 3 selected</span>
             <button className="text-sm text-[#c9c9c9] hover:text-white" onClick={() => ws.set({ compareIds: [] })}>Clear</button>
             <button className="btn-primary btn-sm rounded-full" onClick={() => ws.set({ compareOpen: true })} disabled={ws.compareIds.length < 2}>
@@ -165,7 +191,7 @@ const LAYERS: { key: Layer; label: string; swatch: React.ReactNode }[] = [
     label: "How well it fits",
     swatch: (
       <span className="flex gap-0.5" aria-hidden="true">
-        {["#2E6A93", "#5289AD", "#ACBCBF"].map((c) => <span key={c} className="w-2 h-3 rounded-[2px]" style={{ background: c }} />)}
+        {["#3BB273", "#F5A623", "#E85D5D"].map((c) => <span key={c} className="w-2 h-3 rounded-[2px]" style={{ background: c }} />)}
       </span>
     ),
   },
@@ -193,7 +219,7 @@ function LayerToggles() {
               </label>
             </li>
           ))}
-          <li className="text-[13px] text-fg-tertiary pt-1">Darker blue is a better fit. Pins show when you zoom in.</li>
+          <li className="text-[13px] text-fg-tertiary pt-1">Green is a strong fit, amber is mixed, red is weak. Pins show when you zoom in.</li>
         </ul>
       )}
     </div>

@@ -127,10 +127,12 @@ export function MapView({ onOpenSite }: { onOpenSite: (h3: string, lat: number, 
   const getTooltip = ({ object, layer }: { object?: HexResult; layer?: { id: string } | null }) => {
     if (!object || layer?.id !== "hexes") return null;
     return {
-      html: `<div style="background:#fff;border:1px solid rgba(10,10,10,.12);border-radius:8px;padding:8px 12px;font:14px 'IBM Plex Sans',sans-serif;color:#243C4C;box-shadow:0 8px 24px rgba(10,10,10,.1)">
+      html: `<div style="background:#fff;border:1px solid rgba(36,60,76,.14);border-radius:10px;padding:10px 14px;font:14px 'IBM Plex Sans',sans-serif;color:#243C4C;box-shadow:0 8px 24px rgba(36,60,76,.14);min-width:150px">
         <div style="font-weight:500">${esc(object.locality ?? "Sydney")}</div>
-        <div style="margin-top:3px;font-weight:500;color:${scoreHex(object.score)}">${scoreLabel(object.score)}</div>
-        <div style="color:#516C7C;font-size:13px;margin-top:2px">${object.n_competitors} competitor${object.n_competitors === 1 ? "" : "s"} within 500 m</div>
+        <div style="display:flex;align-items:baseline;gap:6px;margin-top:4px">
+          <span style="font:400 28px/1 Reglo,'IBM Plex Sans',sans-serif;color:${scoreHex(object.score)}">${object.score}</span>
+          <span style="color:#516C7C;font-size:13px">/100 · ${scoreLabel(object.score)}</span>
+        </div>
       </div>`,
       style: { background: "transparent", border: "none", padding: "0" },
     };

@@ -118,9 +118,6 @@ export function AuthPage({ mode }: { mode: "login" | "signup" }) {
             </p>
           </div>
         </main>
-        <p className="text-[13px] text-fg-tertiary">
-          Your brand profile and stores are private to your account. Delete them any time from Settings.
-        </p>
       </div>
 
       <aside className="hidden lg:block relative overflow-hidden bg-brand-navy" aria-hidden="true">

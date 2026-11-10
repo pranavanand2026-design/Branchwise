@@ -334,20 +334,29 @@ def _lerp_clamp(value: float, at_zero: float, at_hundred: float) -> float:
     return max(0.0, min(100.0, t * 100.0))
 
 
+# Smooth curves, calibrated on the 2026-10-15 Sydney release: no signal hits 100
+# until a zone is genuinely exceptional, so the best areas still separate.
+#   transit  100*e^(-d/600):  90 m -> 86, 300 m -> 61, 700 m -> 31
+#   anchor   100*e^(-d/700):  80 m -> 89, 360 m -> 60, 630 m -> 41
+#   retail   100*(1-e^(-n/20)): 12 -> 45, 25 -> 71, 60 -> 95
+#   complementary 100*(1-e^(-n/6)): 4 -> 49, 8 -> 74, 15 -> 92
+#   competitors 100*e^(-n/2.5): 0 -> 100, 1 -> 67, 3 -> 30, 8 -> 4
+CURVES = {"transit_m": 600.0, "anchor_m": 700.0, "retail_n": 20.0, "complementary_n": 6.0, "competitor_n": 2.5}
+
+
 def _components(s: HexSignals, d_cannibal: float | None) -> dict[str, int]:
     p = PARAMS
-    s_anchor = 0.0
-    if s.d_anchor_m is not None:
-        s_anchor = _lerp_clamp(s.d_anchor_m, p["anchor_zero_m"], p["anchor_full_score_m"])
-    s_comp = _lerp_clamp(s.n_complementary, 0, 10)
+    c = CURVES
+    s_anchor = 0.0 if s.d_anchor_m is None else 100 * math.exp(-s.d_anchor_m / c["anchor_m"])
+    s_comp = 100 * (1 - math.exp(-s.n_complementary / c["complementary_n"]))
     return {
-        "market_saturation": round(_lerp_clamp(s.n_competitors, p["competitor_saturation"], 0)),
+        "market_saturation": round(100 * math.exp(-s.n_competitors / c["competitor_n"])),
         "cannibalisation": 100 if d_cannibal is None
         else round(_lerp_clamp(d_cannibal, p["cannibal_zero_m"], p["cannibal_full_score_m"])),
-        "surrounding_amenities": round(s_anchor * 0.5 + s_comp * 0.5),
+        "surrounding_amenities": round(s_anchor * 0.6 + s_comp * 0.4),
         "transit_accessibility": 0 if s.d_transit_m is None
-        else round(_lerp_clamp(s.d_transit_m, p["transit_zero_m"], p["transit_full_score_m"])),
-        "demographic_match": round(_lerp_clamp(s.n_retail, 0, p["foot_traffic_saturation"])),
+        else round(100 * math.exp(-s.d_transit_m / c["transit_m"])),
+        "demographic_match": round(100 * (1 - math.exp(-s.n_retail / c["retail_n"]))),
     }
 
 
