@@ -57,7 +57,9 @@ function App() {
       <Route path="/signup" element={<GuestOnly><AuthPage mode="signup" /></GuestOnly>} />
       <Route path="/onboarding" element={<RequireUser needsBrand={false}><Onboarding /></RequireUser>} />
       <Route path="/settings" element={<RequireUser><Settings /></RequireUser>} />
-      <Route path="/" element={<RequireUser><Workspace /></RequireUser>} />
+      <Route path="/" element={<RequireUser><Workspace view="map" /></RequireUser>} />
+      <Route path="/shortlist" element={<RequireUser><Workspace view="shortlist" /></RequireUser>} />
+      <Route path="/assistant" element={<RequireUser><Workspace view="assistant" /></RequireUser>} />
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
   );

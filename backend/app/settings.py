@@ -26,7 +26,6 @@ class Settings:
     allowed_origins: tuple[str, ...]
     cookie_secure: bool
     session_days: int
-    assistant_enabled: bool
     serve_frontend: bool
 
     @property
@@ -47,8 +46,6 @@ def load_settings() -> Settings:
         allowed_origins=tuple(o.strip() for o in origins.split(",") if o.strip()),
         cookie_secure=_bool("COOKIE_SECURE", prod),
         session_days=int(os.environ.get("SESSION_DAYS", "14")),
-        # The LLM assistant is paused by default; flip on once a provider/budget is chosen.
-        assistant_enabled=_bool("ASSISTANT_ENABLED", False),
         serve_frontend=_bool("SERVE_FRONTEND", prod),
     )
 

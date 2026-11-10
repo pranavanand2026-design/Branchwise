@@ -17,7 +17,12 @@ from pydantic import BaseModel, Field
 from . import auth, brand
 from .db import DATA_PARQUET, get_con
 from .scoring import warm_cache
-from .security import csrf_ok, current_user
+from .security import csrf_ok, current_user, enforce_rate
+from .storage import get_db
+from sqlalchemy.orm import Session
+from typing import Literal
+from .db import get_config
+from .assistant import provider_status as assistant_status
 from .settings import ROOT, settings
 from .storage import User, init_db
 
@@ -88,26 +93,39 @@ def health() -> dict:
     meta_path = ROOT / "data" / "dataset.json"
     dataset = json.loads(meta_path.read_text()) if meta_path.exists() else {"source": "unknown"}
     return {"ok": True, "poi_count": int(n), "dataset": dataset,
-            "assistant_enabled": settings.assistant_enabled}
+            "assistant": assistant_status()}
 
 
-# ─── Optional assistant (paused by default) ──────────────────────────────────
+# ─── Assistant (Groq with tools; no-AI fallback) ─────────────────────────────
 
 
-class ChatRequest(BaseModel):
-    message: str = Field(min_length=1, max_length=1000)
+class ChatMessage(BaseModel):
+    role: Literal["user", "assistant"]
+    content: str = Field(max_length=4000)
 
 
-@app.post("/api/chat")
-def api_chat(req: ChatRequest, user: User = Depends(current_user)) -> dict:
-    if not settings.assistant_enabled:
-        raise HTTPException(503, "The assistant is turned off.")
-    from .claude_chat import chat as claude_chat
+class AssistantRequest(BaseModel):
+    messages: list[ChatMessage] = Field(min_length=1, max_length=40)
+    priorities: dict[str, int] | None = None
+    regions: list[str] | None = Field(default=None, max_length=20)
 
-    slug = None
-    if user.brand:
-        slug = "".join(ch for ch in user.brand.name.lower() if ch.isalpha())[:18] or None
-    return claude_chat(req.message, brand_slug=slug)
+
+@app.post("/api/assistant")
+def api_assistant(req: AssistantRequest, user: User = Depends(current_user), db: Session = Depends(get_db)) -> dict:
+    from . import assistant
+    from .scoring import SIGNALS
+
+    if user.brand is None:
+        raise HTTPException(409, "Set up your brand first.")
+    if req.messages[-1].role != "user" or len(req.messages[-1].content.strip()) == 0:
+        raise HTTPException(422, "Send a message.")
+    if len(req.messages[-1].content) > 1000:
+        raise HTTPException(422, "Keep messages under 1,000 characters.")
+    enforce_rate(f"assistant-hour:{user.id}", limit=40, window_s=3600)
+    enforce_rate(f"assistant-day:{user.id}", limit=200, window_s=86400)
+    pri = {k: int(v) for k, v in (req.priorities or {}).items() if k in SIGNALS and 0 <= int(v) <= 4} or None
+    regions = [r for r in req.regions if r in get_config().get("regions", {})] if req.regions is not None else None
+    return assistant.chat(user.brand, db, [m.model_dump() for m in req.messages], pri, regions)
 
 
 # ─── Production: serve the built frontend from the same origin ───────────────

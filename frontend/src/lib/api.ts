@@ -64,7 +64,7 @@ export type Health = {
   ok: boolean;
   poi_count: number;
   dataset: { source: "foursquare" | "synthetic" | "unknown"; release?: string | null; hex_count?: number };
-  assistant_enabled: boolean;
+  assistant: { provider: "groq" | "offline"; model: string | null };
 };
 
 export type HexResult = {
@@ -158,6 +158,26 @@ export type HexReport = {
 
 export type Session = { user: User | null; brand: Brand | null };
 
+// ─── Assistant ──────────────────────────────────────────────────────────────
+
+export type Scenario = { priorities: Record<SignalKey, number> | null; regions: string[] | null; label?: string };
+export type AssistantSite = { h3_id: string; suburb: string | null; score: number; lat: number; lng: number; reasons: string[]; risks: string[] };
+export type AssistantPlace = { id: string; name: string; category: string | null; suburb: string | null; lat: number; lng: number };
+export type AssistantAction =
+  | { type: "scenario"; priorities: Record<SignalKey, number> | null; regions: string[] | null; label: string }
+  | { type: "sites"; sites: AssistantSite[] }
+  | { type: "places"; query: string; total: number; places: AssistantPlace[] }
+  | { type: "focus"; h3_id: string; lat: number; lng: number; suburb: string | null; score: number }
+  | { type: "saved"; h3_id: string; suburb: string | null };
+export type ChatMsg = { role: "user" | "assistant"; content: string; actions?: AssistantAction[]; mode?: "groq" | "offline"; note?: string | null };
+export type AssistantReply = { reply: string; actions: AssistantAction[]; scenario: { priorities: Record<SignalKey, number> | null; regions: string[] | null }; mode: "groq" | "offline"; note: string | null };
+
+/** Query value for a what-if scenario: "demographic_match:4,...". */
+export function priParam(p: Record<string, number> | null | undefined): string | undefined {
+  if (!p) return undefined;
+  return Object.entries(p).map(([k, v]) => `${k}:${v}`).join(",");
+}
+
 /** Error with an optional field name, so forms can show it under the right input. */
 export class ApiError extends Error {
   status: number;
@@ -228,13 +248,17 @@ export const api = {
     }),
   searchPlaces: (q: string) => get<{ places: Place[] }>(`/api/places/search?q=${encodeURIComponent(q)}`),
 
-  heatmap: () => get<{ vertical: string; count: number; hexes: HexResult[] }>("/api/heatmap"),
-  rankings: (limit = 20, regions?: string[]) => {
+  heatmap: (pri?: string) => get<{ vertical: string; count: number; hexes: HexResult[] }>(`/api/heatmap${pri ? `?pri=${encodeURIComponent(pri)}` : ""}`),
+  rankings: (limit = 20, regions?: string[], pri?: string) => {
     const q = new URLSearchParams({ limit: String(limit) });
     regions?.forEach((r) => q.append("region", r));
+    if (pri) q.set("pri", pri);
     return get<{ sites: RankedSite[]; regions: string[] }>(`/api/rankings?${q}`);
   },
-  report: (h3_id: string) => get<HexReport>(`/api/report/${encodeURIComponent(h3_id)}`),
+  report: (h3_id: string, pri?: string) =>
+    get<HexReport>(`/api/report/${encodeURIComponent(h3_id)}${pri ? `?pri=${encodeURIComponent(pri)}` : ""}`),
+  assistant: (messages: { role: "user" | "assistant"; content: string }[], scenario: Scenario | null) =>
+    post<AssistantReply>("/api/assistant", { messages, priorities: scenario?.priorities ?? null, regions: scenario?.regions ?? null }),
   compare: (h3_ids: string[]) => post<{ reports: HexReport[] }>("/api/compare", { h3_ids }),
   pins: (b: { min_lat: number; max_lat: number; min_lng: number; max_lng: number }) => {
     const q = new URLSearchParams({ ...Object.fromEntries(Object.entries(b).map(([k, v]) => [k, v.toFixed(5)])), limit: "500" });

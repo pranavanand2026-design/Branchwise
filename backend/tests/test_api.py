@@ -27,6 +27,8 @@ def client() -> TestClient:
 
 
 def signup(c: TestClient, email: str) -> None:
+    from backend.app.security import limiter
+    limiter._hits.clear()  # the suite creates more accounts than the hourly sign-up limit
     r = c.post("/api/auth/signup", json={"email": email, "password": PW}, headers=H)
     assert r.status_code == 201, r.text
 
@@ -141,3 +143,69 @@ def test_password_change_and_delete():
         r = a.post("/api/auth/login", json={"email": "delete-me@example.com",
                                             "password": "another-long-passphrase"}, headers=H)
         assert r.status_code == 401
+
+
+def test_assistant_offline_and_scenario(monkeypatch):
+    monkeypatch.delenv("GROQ_API_KEY", raising=False)
+    with TestClient(app) as a:
+        signup(a, "assistant@example.com")
+        make_brand(a)
+        r = a.post("/api/assistant", headers=H, json={"messages": [
+            {"role": "user", "content": "We sell to uni students who come by train in the Inner West"}]})
+        assert r.status_code == 200, r.text
+        d = r.json()
+        assert d["mode"] == "offline"
+        kinds = {x["type"] for x in d["actions"]}
+        assert "scenario" in kinds and "sites" in kinds
+        pri = d["scenario"]["priorities"]
+        assert pri["surrounding_amenities"] == 4 and pri["transit_accessibility"] == 4
+        assert d["scenario"]["regions"] == ["inner_west"]
+        # the what-if flows through to the map routes
+        q = ",".join(f"{k}:{v}" for k, v in pri.items())
+        assert a.get("/api/heatmap", params={"pri": q}).status_code == 200
+        assert a.get("/api/rankings", params={"pri": q, "region": "inner_west", "limit": 3}).json()["sites"]
+        # place lookup
+        d2 = a.post("/api/assistant", headers=H, json={"messages": [
+            {"role": "user", "content": "find Gong Cha stores"}]}).json()
+        assert any(x["type"] == "places" for x in d2["actions"])
+
+
+def test_assistant_validation():
+    with TestClient(app) as a:
+        signup(a, "assistant-val@example.com")
+        make_brand(a)
+        r = a.post("/api/assistant", headers=H, json={"messages": [{"role": "assistant", "content": "hi"}]})
+        assert r.status_code == 422
+        r = a.post("/api/assistant", headers=H, json={"messages": [{"role": "user", "content": "x" * 1200}]})
+        assert r.status_code == 422
+
+
+def test_assistant_groq_tool_loop(monkeypatch):
+    """Fake Groq: first reply asks for tools, second answers. Checks the loop and the actions."""
+    from types import SimpleNamespace as NS
+    from backend.app import assistant
+
+    calls = {"n": 0}
+
+    def fake_create(**kw):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            assert any(t["function"]["name"] == "find_best_areas" for t in kw["tools"])
+            tc = [NS(id="c1", function=NS(name="set_priorities", arguments='{"top": ["transit_accessibility"]}')),
+                  NS(id="c2", function=NS(name="find_best_areas", arguments='{"limit": 3}'))]
+            return NS(choices=[NS(message=NS(content="", tool_calls=tc))])
+        tool_msgs = [m for m in kw["messages"] if m["role"] == "tool"]
+        assert len(tool_msgs) == 2 and '"areas"' in tool_msgs[1]["content"]
+        return NS(choices=[NS(message=NS(content="Try the top three near stations.", tool_calls=None))])
+
+    fake = NS(chat=NS(completions=NS(create=fake_create)))
+    monkeypatch.setenv("GROQ_API_KEY", "test-key")
+    monkeypatch.setenv("GROQ_MODEL", "fake-model")
+    monkeypatch.setattr(assistant, "_client", lambda: fake)
+    with TestClient(app) as a:
+        signup(a, "groq-loop@example.com")
+        make_brand(a)
+        d = a.post("/api/assistant", headers=H, json={"messages": [{"role": "user", "content": "commuter coffee"}]}).json()
+        assert d["mode"] == "groq" and d["reply"].startswith("Try the top three")
+        assert [x["type"] for x in d["actions"]] == ["scenario", "sites"]
+        assert len(d["actions"][1]["sites"]) == 3

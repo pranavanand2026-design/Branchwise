@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import type { HexReport, HexResult, RankedSite, SavedSite } from "./api";
+import type { AssistantPlace, ChatMsg, HexReport, HexResult, RankedSite, SavedSite, Scenario } from "./api";
 
 export type Layer = "opportunity" | "competitors" | "complementary" | "own_stores";
 export type PanelTab = "ranked" | "shortlist";
@@ -28,6 +28,14 @@ type Workspace = {
 
   flyTo: { lat: number; lng: number; zoom: number; tick: number } | null;
 
+  /** what-if from the assistant: overrides saved priorities/areas until saved or reset */
+  scenario: Scenario | null;
+  places: AssistantPlace[];
+  chat: ChatMsg[];
+  chatBusy: boolean;
+  /** an area to open once the map view mounts (from the shortlist page) */
+  pendingOpen: string | null;
+
   set: (p: Partial<Workspace>) => void;
   toggleLayer: (l: Layer) => void;
   toggleCompare: (h3: string) => void;
@@ -52,6 +60,11 @@ const initial = {
   panelTab: "ranked" as PanelTab,
   panelOpen: true,
   flyTo: null,
+  scenario: null as Scenario | null,
+  places: [] as AssistantPlace[],
+  chat: [] as ChatMsg[],
+  chatBusy: false,
+  pendingOpen: null as string | null,
 };
 
 export const useWorkspace = create<Workspace>((set) => ({

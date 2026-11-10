@@ -156,10 +156,23 @@ def require_brand(user: User = Depends(current_user)) -> Brand:
     return user.brand
 
 
-def profile_for(b: Brand) -> Profile:
+def parse_pri(pri: str | None) -> dict[str, int] | None:
+    """A 'what if' set of priorities from the query string: 'demographic_match:4,transit_accessibility:1'."""
+    if not pri:
+        return None
+    out: dict[str, int] = {}
+    for part in pri.split(",")[:10]:
+        k, _, v = part.partition(":")
+        if k in SIGNALS and v.isdigit() and 0 <= int(v) <= 4:
+            out[k] = int(v)
+    return out or None
+
+
+def profile_for(b: Brand, priorities: dict[str, int] | None = None) -> Profile:
+    """The brand's scoring profile; `priorities` overrides the saved ones (an assistant scenario)."""
     return Profile(
         vertical=b.vertical,
-        weights=weights_from_priorities(b.priorities),
+        weights=weights_from_priorities(priorities or b.priorities),
         stores=tuple(ScoreStore(s.lat, s.lng, s.fsq_place_id) for s in b.stores),
         regions=tuple(b.regions or ()),
     )
@@ -257,24 +270,25 @@ def put_stores(body: StoresIn, brand: Brand = Depends(require_brand), db: Sessio
 
 
 @router.get("/heatmap")
-def heatmap(brand: Brand = Depends(require_brand)) -> dict:
-    scores = score_profile(profile_for(brand))
+def heatmap(pri: str | None = Query(None, max_length=200), brand: Brand = Depends(require_brand)) -> dict:
+    scores = score_profile(profile_for(brand, parse_pri(pri)))
     return {"vertical": brand.vertical, "count": len(scores), "hexes": [hex_to_dict(h) for h in scores]}
 
 
 @router.get("/rankings")
 def rankings(limit: int = Query(20, ge=1, le=50),
              region: list[str] | None = Query(None),
+             pri: str | None = Query(None, max_length=200),
              brand: Brand = Depends(require_brand)) -> dict:
     known = get_config().get("regions", {})
     regions = tuple(r for r in (region or []) if r in known) if region is not None else None
-    sites = rank_sites(profile_for(brand), limit=limit, region_keys=regions)
+    sites = rank_sites(profile_for(brand, parse_pri(pri)), limit=limit, region_keys=regions)
     return {"sites": sites, "regions": list(regions if regions is not None else brand.regions or [])}
 
 
 @router.get("/report/{h3_id}")
-def report(h3_id: str, brand: Brand = Depends(require_brand)) -> dict:
-    rep = hex_report(profile_for(brand), _valid_cell(h3_id))
+def report(h3_id: str, pri: str | None = Query(None, max_length=200), brand: Brand = Depends(require_brand)) -> dict:
+    rep = hex_report(profile_for(brand, parse_pri(pri)), _valid_cell(h3_id))
     saved = next((s for s in brand.saved_sites if s.h3_id == h3_id), None)
     rep["saved"] = saved_out(saved) if saved else None
     return rep

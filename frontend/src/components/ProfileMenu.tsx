@@ -2,10 +2,12 @@
 import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { LogOut, Settings as SettingsIcon, Sparkles } from "lucide-react";
-import { useSession } from "../lib/session";
+import { useSession, verticalLabel } from "../lib/session";
 
 export function ProfileMenu({ onTour, onLogout }: { onTour: () => void; onLogout: () => void }) {
   const user = useSession((s) => s.user);
+  const brand = useSession((s) => s.brand);
+  const meta = useSession((s) => s.meta);
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
 
@@ -37,11 +39,25 @@ export function ProfileMenu({ onTour, onLogout }: { onTour: () => void; onLogout
         {initial}
       </button>
       {open && (
-        <div role="menu" className="absolute right-0 top-11 z-50 w-64 bg-white rounded-md border border-bg-border shadow-pop py-2">
+        <div role="menu" className="absolute right-0 top-11 z-50 w-72 bg-white rounded-md border border-bg-border shadow-pop py-2">
           <div className="px-4 pt-1 pb-3 border-b border-bg-border">
             {user?.full_name && <p className="text-[15px] font-medium truncate">{user.full_name}</p>}
             <p className="text-sm text-fg-tertiary truncate">{user?.email}</p>
           </div>
+          {brand && (
+            <Link role="menuitem" to="/settings" onClick={() => setOpen(false)}
+              className="flex items-center gap-3 px-4 py-3 border-b border-bg-border hover:bg-bg-base">
+              <span className="w-8 h-8 shrink-0 rounded-md bg-accent-soft text-accent-link grid place-items-center font-display text-[15px]" aria-hidden="true">
+                {brand.name.trim().charAt(0).toUpperCase()}
+              </span>
+              <span className="min-w-0">
+                <span className="block text-[15px] font-medium truncate">{brand.name}</span>
+                <span className="block text-[13px] text-fg-tertiary truncate">
+                  {verticalLabel(meta, brand.vertical)} · {brand.stores.length} store{brand.stores.length === 1 ? "" : "s"} · Edit brand
+                </span>
+              </span>
+            </Link>
+          )}
           <Link role="menuitem" to="/settings" className="flex items-center gap-3 px-4 h-11 text-[15px] hover:bg-bg-base" onClick={() => setOpen(false)}>
             <SettingsIcon size={17} aria-hidden="true" /> Settings
           </Link>

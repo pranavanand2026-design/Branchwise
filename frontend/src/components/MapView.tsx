@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Map, { Marker, type MapRef, useControl } from "react-map-gl/maplibre";
 import { H3HexagonLayer } from "@deck.gl/geo-layers";
 import { MapboxOverlay, type MapboxOverlayProps } from "@deck.gl/mapbox";
-import { api, type HexResult, type Pin } from "../lib/api";
+import { api, priParam, type HexResult, type Pin } from "../lib/api";
 import { useWorkspace } from "../lib/store";
 import { useSession } from "../lib/session";
 import { scoreColor, scoreHex, scoreLabel } from "../lib/colors";
@@ -49,7 +49,9 @@ export function MapView({ onOpenSite }: { onOpenSite: (h3: string, lat: number, 
   const brand = useSession((s) => s.brand);
   const {
     hexes, loadingHeatmap, heatmapError, layers, selectedHex, hoveredHex, ranked, compareIds, flyTo, set,
+    scenario, places,
   } = useWorkspace();
+  const pri = priParam(scenario?.priorities);
 
   useEffect(() => {
     if (!flyTo) return;
@@ -59,14 +61,14 @@ export function MapView({ onOpenSite }: { onOpenSite: (h3: string, lat: number, 
   const loadHeatmap = useCallback(() => {
     set({ loadingHeatmap: true, heatmapError: null });
     api
-      .heatmap()
+      .heatmap(pri)
       .then((d) => set({ hexes: d.hexes }))
       .catch((e) => set({ hexes: [], heatmapError: (e as Error).message }))
       .finally(() => set({ loadingHeatmap: false }));
-  }, [set]);
+  }, [set, pri]);
 
-  // Reload whenever the profile that drives scoring changes
-  const profileKey = brand ? JSON.stringify([brand.vertical, brand.priorities, brand.stores.length]) : "";
+  // Reload whenever the profile (or the assistant's what-if) that drives scoring changes
+  const profileKey = brand ? JSON.stringify([brand.vertical, brand.priorities, brand.stores.length, pri]) : "";
   useEffect(() => {
     if (brand) loadHeatmap();
   }, [profileKey]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -182,6 +184,18 @@ export function MapView({ onOpenSite }: { onOpenSite: (h3: string, lat: number, 
               </svg>
             </Marker>
           ))}
+
+        {places.map((p) => (
+          <Marker key={`place-${p.id}`} longitude={p.lng} latitude={p.lat} anchor="center">
+            <span className="group relative block">
+              <span className="block w-3.5 h-3.5 rotate-45 rounded-[3px] bg-accent-blue ring-2 ring-white shadow" />
+              <span className="pointer-events-none absolute left-1/2 bottom-5 -translate-x-1/2 hidden group-hover:block whitespace-nowrap rounded-sm bg-white px-2.5 py-1.5 text-[13px] shadow-pop border border-bg-border">
+                <b className="font-medium">{p.name}</b>
+                <span className="text-fg-tertiary"> · {p.category ?? "Place"}{p.suburb ? `, ${p.suburb}` : ""}</span>
+              </span>
+            </span>
+          </Marker>
+        ))}
 
         {topTen.map((s) => (
           <Marker
