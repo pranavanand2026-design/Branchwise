@@ -42,3 +42,4 @@ data/.secret_key
 CLAUDE.md
 PLAN.md
 dataset_overview.md
+*.tsbuildinfo
