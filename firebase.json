@@ -1,0 +1,9 @@
+{
+  "hosting": {
+    "site": "branchwise",
+    "public": "deploy/hosting-empty",
+    "rewrites": [
+      { "source": "**", "run": { "serviceId": "branchwise", "region": "australia-southeast1" } }
+    ]
+  }
+}
