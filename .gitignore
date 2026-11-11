@@ -23,3 +23,8 @@ data/raw/
 # IDE
 .vscode/
 .idea/
+data/app.db
+data/app.db-*
+data/dataset.json
+.taste-skill/
+shots/

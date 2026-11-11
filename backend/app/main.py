@@ -1,166 +1,128 @@
-"""FastAPI entrypoint for GapMap."""
+"""FastAPI entrypoint for Branchwise."""
 
 from __future__ import annotations
 
+import json
+import logging
+import threading
+from contextlib import asynccontextmanager
 from pathlib import Path
 
-from dotenv import load_dotenv
-
-# Load .env from repo root if present
-load_dotenv(Path(__file__).resolve().parent.parent.parent / ".env")
-
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
+from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
 
-from .claude_chat import chat as claude_chat
-from .db import get_config, get_con
-from .scoring import hex_report, score_hexes
+from . import auth, brand
+from .db import DATA_PARQUET, get_con
+from .scoring import warm_cache
+from .security import csrf_ok, current_user
+from .settings import ROOT, settings
+from .storage import User, init_db
 
-app = FastAPI(title="GapMap API", version="0.1.0")
+log = logging.getLogger("branchwise")
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    init_db()
+    if DATA_PARQUET.exists():
+        # Precompute per-category signals in the background so the first map load is fast
+        threading.Thread(target=warm_cache, daemon=True).start()
+    else:
+        log.warning("Missing %s. Run: python scripts/prepare_sydney.py", DATA_PARQUET)
+    yield
+
+
+app = FastAPI(
+    title="Branchwise API",
+    version="0.2.0",
+    lifespan=lifespan,
+    docs_url=None if settings.is_production else "/api/docs",
+    redoc_url=None,
+    openapi_url=None if settings.is_production else "/api/openapi.json",
 )
 
+app.add_middleware(GZipMiddleware, minimum_size=1024)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=list(settings.allowed_origins),
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
+    allow_headers=["Content-Type", "X-Requested-With"],
+)
 
-# ─── Schemas ─────────────────────────────────────────────────────────────────
-
-
-class HeatmapRequest(BaseModel):
-    vertical: str = Field(..., description="e.g. bubble_tea, coffee, fast_casual")
-    brand_slug: str | None = None
-    locality: str | None = None
-    weight_overrides: dict[str, float] | None = None
-
-
-class ReportRequest(BaseModel):
-    vertical: str
-    h3_id: str
-    brand_slug: str | None = None
-
-
-class CompareRequest(BaseModel):
-    vertical: str
-    h3_ids: list[str]
-    brand_slug: str | None = None
+SECURITY_HEADERS = {
+    "X-Content-Type-Options": "nosniff",
+    "X-Frame-Options": "DENY",
+    "Referrer-Policy": "strict-origin-when-cross-origin",
+    "Permissions-Policy": "geolocation=(), camera=(), microphone=()",
+}
 
 
-class ChatRequest(BaseModel):
-    message: str
-    brand_slug: str | None = None
+@app.middleware("http")
+async def guard(request: Request, call_next):
+    if not csrf_ok(request):
+        return JSONResponse({"detail": "Missing request header."}, status_code=403)
+    response = await call_next(request)
+    for k, v in SECURITY_HEADERS.items():
+        response.headers.setdefault(k, v)
+    if settings.cookie_secure:
+        response.headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+    if request.url.path.startswith("/api/"):
+        response.headers.setdefault("Cache-Control", "no-store")
+    return response
 
 
-# ─── Endpoints ───────────────────────────────────────────────────────────────
+app.include_router(auth.router)
+app.include_router(brand.router)
+
+
+# ─── Health ──────────────────────────────────────────────────────────────────
 
 
 @app.get("/api/health")
 def health() -> dict:
-    con = get_con()
-    n = con.execute("SELECT COUNT(*) FROM pois").fetchone()[0]
-    return {"ok": True, "poi_count": int(n)}
+    n = get_con().execute("SELECT COUNT(*) FROM pois").fetchone()[0]
+    meta_path = ROOT / "data" / "dataset.json"
+    dataset = json.loads(meta_path.read_text()) if meta_path.exists() else {"source": "unknown"}
+    return {"ok": True, "poi_count": int(n), "dataset": dataset,
+            "assistant_enabled": settings.assistant_enabled}
 
 
-@app.get("/api/verticals")
-def list_verticals() -> dict:
-    cfg = get_config()
-    return {
-        "verticals": [
-            {
-                "key": k,
-                "label": v["label"],
-                "competitors": v["competitors"],
-                "anchors": v["anchors"],
-                "complementary": v["complementary"],
-            }
-            for k, v in cfg["verticals"].items()
-        ]
-    }
+# ─── Optional assistant (paused by default) ──────────────────────────────────
 
 
-@app.post("/api/heatmap")
-def api_heatmap(req: HeatmapRequest) -> dict:
-    try:
-        scores = score_hexes(
-            req.vertical, brand_slug=req.brand_slug, locality_filter=req.locality,
-            weight_overrides=req.weight_overrides,
-        )
-    except KeyError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    return {
-        "vertical": req.vertical,
-        "count": len(scores),
-        "hexes": [
-            {
-                "h3_id": s.h3_id,
-                "lat": s.lat,
-                "lng": s.lng,
-                "locality": s.locality,
-                "score": s.score,
-                "components": s.components,
-                "n_competitors":   s.signals_raw["n_competitors"],
-                "n_complementary": s.signals_raw["n_complementary"],
-            }
-            for s in scores
-        ],
-    }
-
-
-@app.post("/api/report")
-def api_report(req: ReportRequest) -> dict:
-    try:
-        return hex_report(req.vertical, req.h3_id, brand_slug=req.brand_slug)
-    except KeyError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-
-
-@app.post("/api/compare")
-def api_compare(req: CompareRequest) -> dict:
-    reports = [
-        hex_report(req.vertical, h, brand_slug=req.brand_slug) for h in req.h3_ids
-    ]
-    return {"reports": reports}
-
-
-@app.get("/api/pins")
-def api_pins(
-    vertical: str,
-    min_lat: float,
-    max_lat: float,
-    min_lng: float,
-    max_lng: float,
-    brand_slug: str | None = None,
-    limit: int = 400,
-) -> dict:
-    """Return competitor + complementary + own-brand pins within a bbox."""
-    from .scoring import _category_tag_cte
-
-    con = get_con()
-    tagged = _category_tag_cte(vertical)
-    own_brand_expr = (
-        f"(brand_slug LIKE '{brand_slug.replace(chr(39), chr(39)*2)}%')"
-        if brand_slug else "FALSE"
-    )
-    sql = f"""
-    WITH {tagged}
-    SELECT
-      fsq_place_id, name, primary_category, latitude, longitude, locality,
-      is_competitor, is_complementary, is_anchor, is_transit,
-      {own_brand_expr} AS is_own_brand
-    FROM tagged
-    WHERE latitude  BETWEEN {min_lat} AND {max_lat}
-      AND longitude BETWEEN {min_lng} AND {max_lng}
-      AND (is_competitor OR is_complementary OR is_anchor OR is_transit OR {own_brand_expr})
-    LIMIT {int(limit)}
-    """
-    rows = con.execute(sql).fetchall()
-    cols = [c[0] for c in con.description]
-    return {"pins": [dict(zip(cols, r)) for r in rows]}
+class ChatRequest(BaseModel):
+    message: str = Field(min_length=1, max_length=1000)
 
 
 @app.post("/api/chat")
-def api_chat(req: ChatRequest) -> dict:
-    return claude_chat(req.message, brand_slug=req.brand_slug)
+def api_chat(req: ChatRequest, user: User = Depends(current_user)) -> dict:
+    if not settings.assistant_enabled:
+        raise HTTPException(503, "The assistant is turned off.")
+    from .claude_chat import chat as claude_chat
+
+    slug = None
+    if user.brand:
+        slug = "".join(ch for ch in user.brand.name.lower() if ch.isalpha())[:18] or None
+    return claude_chat(req.message, brand_slug=slug)
+
+
+# ─── Production: serve the built frontend from the same origin ───────────────
+
+DIST = ROOT / "frontend" / "dist"
+
+if settings.serve_frontend and DIST.exists():
+    @app.get("/{full_path:path}", include_in_schema=False)
+    def spa(full_path: str):
+        if full_path.startswith("api/"):
+            raise HTTPException(404)
+        target = (DIST / full_path).resolve()
+        if full_path and target.is_file() and DIST.resolve() in target.parents:
+            return FileResponse(target)
+        # /app/* is the React app; everything else is the static landing page
+        if full_path == "app" or full_path.startswith("app/"):
+            return FileResponse(DIST / "app.html")
+        return FileResponse(DIST / "index.html")

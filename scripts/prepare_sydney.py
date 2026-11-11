@@ -63,7 +63,8 @@ def brand_slug_expr(col: str = "name") -> str:
 def download_real_data(hf_token: str) -> None:
     con = duckdb.connect()
     con.execute("INSTALL httpfs; LOAD httpfs;")
-    con.execute(f"CREATE OR REPLACE SECRET (TYPE huggingface, TOKEN '{hf_token}')")
+    safe_token = hf_token.replace("'", "''")
+    con.execute(f"CREATE OR REPLACE SECRET (TYPE huggingface, TOKEN '{safe_token}')")
     has_h3 = install_h3_extension(con)
 
     print(f"[fsq] scanning parquet and filtering to Sydney bbox...")
@@ -140,7 +141,7 @@ SYNTHETIC_CATEGORIES = [
     # (label, weight, is_anchor_type)
     ("Bubble Tea Shop", 2, None),
     ("Coffee Shop", 15, None),
-    ("Cafe", 20, None),
+    ("Café", 20, None),
     ("Bakery", 6, None),
     ("Fast Food Restaurant", 10, None),
     ("Asian Restaurant", 8, None),
@@ -154,9 +155,9 @@ SYNTHETIC_CATEGORIES = [
     ("Supermarket", 2, None),
     ("Shopping Mall", 1, "mall"),
     ("University", 1, "uni"),
-    ("College", 1, "uni"),
+    ("College and University", 1, "uni"),
     ("Hospital", 1, "hospital"),
-    ("Train Station", 2, "transit"),
+    ("Rail Station", 2, "transit"),
     ("Metro Station", 1, "transit"),
     ("Bus Station", 3, "transit"),
     ("Clothing Store", 5, None),
@@ -164,6 +165,8 @@ SYNTHETIC_CATEGORIES = [
     ("Coworking Space", 1, None),
     ("Juice Bar", 2, None),
     ("Smoothie Shop", 1, None),
+    ("Salad Restaurant", 2, None),
+    ("Burger Joint", 3, None),
     ("Office", 4, None),
     ("High School", 2, "school"),
     ("Gym", 3, None),
@@ -198,7 +201,7 @@ SYD_CLUSTERS = [
 BRANDS = {
     "Bubble Tea Shop":      ["Gong Cha", "Chatime", "Sharetea", "Koi Thé", "Coco Fresh", "Xing Fu Tang"],
     "Coffee Shop":          ["Toby's Estate", "Single O", "Campos", "Bluestone Lane", "Gloria Jean's"],
-    "Cafe":                 ["Bills", "The Grounds", "Paramount Coffee", "Reuben Hills"],
+    "Café":                 ["Bills", "The Grounds", "Paramount Coffee", "Reuben Hills"],
     "Fast Food Restaurant": ["McDonald's", "KFC", "Hungry Jack's", "Oporto", "Red Rooster", "Guzman y Gomez"],
     "Asian Restaurant":     ["Mamak", "Din Tai Fung", "Ramen Zundo", "Ippudo"],
     "Sandwich Spot":        ["Subway", "Soul Origin", "Roll'd"],
@@ -208,9 +211,9 @@ BRANDS = {
     "Convenience Store":    ["7-Eleven", "Night Owl"],
     "Shopping Mall":        ["Westfield", "Chatswood Chase", "Broadway Sydney"],
     "University":           ["University of Sydney", "UNSW", "UTS", "Macquarie University"],
-    "College":              ["TAFE NSW", "SAE College"],
+    "College and University": ["TAFE NSW", "SAE College"],
     "Hospital":             ["RPA Hospital", "St Vincent's", "Royal North Shore", "Westmead"],
-    "Train Station":        ["Central Station", "Town Hall", "Strathfield Station", "Redfern Station"],
+    "Rail Station":         ["Central Station", "Town Hall", "Strathfield Station", "Redfern Station"],
     "Metro Station":        ["Metro"],
     "Bus Station":          ["Bus Interchange"],
     "Juice Bar":            ["Boost Juice", "Pressed"],
@@ -293,11 +296,11 @@ def gen_synthetic() -> None:
         ("Westfield Chatswood",      -33.7966, 151.1830, "Shopping Mall", "westfield"),
         ("Chatswood Chase",          -33.7956, 151.1843, "Shopping Mall", "chatswoodchase"),
         ("Broadway Sydney",          -33.8828, 151.1950, "Shopping Mall", "broadway"),
-        ("Central Station",          -33.8830, 151.2070, "Train Station", "centralstation"),
-        ("Town Hall Station",        -33.8730, 151.2070, "Train Station", "townhall"),
-        ("Redfern Station",          -33.8920, 151.1980, "Train Station", "redfern"),
-        ("Strathfield Station",      -33.8720, 151.0960, "Train Station", "strathfield"),
-        ("Parramatta Station",       -33.8180, 150.9995, "Train Station", "parramatta"),
+        ("Central Station",          -33.8830, 151.2070, "Rail Station", "centralstation"),
+        ("Town Hall Station",        -33.8730, 151.2070, "Rail Station", "townhall"),
+        ("Redfern Station",          -33.8920, 151.1980, "Rail Station", "redfern"),
+        ("Strathfield Station",      -33.8720, 151.0960, "Rail Station", "strathfield"),
+        ("Parramatta Station",       -33.8180, 150.9995, "Rail Station", "parramatta"),
         ("RPA Hospital",             -33.8896, 151.1849, "Hospital", "rpahospital"),
         ("St Vincent's Hospital",    -33.8788, 151.2209, "Hospital", "stvincents"),
     ]
@@ -361,15 +364,45 @@ def gen_synthetic() -> None:
     print(f"[synthetic] wrote {OUT_PARQUET}")
 
 
+def write_metadata(source: str) -> None:
+    """Record where the dataset came from so the API/UI can say so honestly."""
+    from datetime import datetime, timezone
+
+    con = duckdb.connect()
+    rows = con.execute(f"SELECT COUNT(*) FROM '{OUT_PARQUET}'").fetchone()[0]
+    hexes = con.execute(f"SELECT COUNT(DISTINCT h3_9) FROM '{OUT_PARQUET}'").fetchone()[0]
+    meta = {
+        "source": source,  # "foursquare" | "synthetic"
+        "release": FSQ_PLACES_GLOB.split("dt=")[1].split("/")[0] if source == "foursquare" else None,
+        "poi_count": int(rows),
+        "hex_count": int(hexes),
+        "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+    }
+    (DATA_DIR / "dataset.json").write_text(json.dumps(meta, indent=2))
+    print(f"[meta] wrote {DATA_DIR / 'dataset.json'}")
+
+
 def main() -> None:
-    hf_token = os.environ.get("HF_TOKEN", "").strip()
+    # Pick up HF_TOKEN from the repo-root .env as well as the shell.
+    try:
+        from dotenv import load_dotenv
+
+        load_dotenv(ROOT / ".env")
+    except ImportError:  # pragma: no cover
+        pass
+
+    force_synthetic = "--synthetic" in sys.argv
+    hf_token = "" if force_synthetic else os.environ.get("HF_TOKEN", "").strip()
     if hf_token:
         print("[mode] HF_TOKEN found — downloading real FSQ Sydney subset")
         download_real_data(hf_token)
+        source = "foursquare"
     else:
         print("[mode] No HF_TOKEN — generating synthetic demo dataset")
-        print("       (set HF_TOKEN env var and re-run for real FSQ data)")
+        print("       (set HF_TOKEN in .env and re-run for real FSQ data)")
         gen_synthetic()
+        source = "synthetic"
+    write_metadata(source)
 
     # Print summary
     con = duckdb.connect()

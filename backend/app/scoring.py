@@ -1,35 +1,46 @@
 """Scoring engine. 5 signals, all from Foursquare data.
 
-Signals (weights sum to 100):
-  - surrounding_amenities (40) — anchor proximity + complementary business density
-  - transit_accessibility (30) — closer to nearest transit POI = higher
-  - demographic_match     (20) — retail+F&B POI density as foot traffic proxy
-  - market_saturation      (5) — fewer direct competitors within 500m = higher
-  - cannibalisation        (5) — farther from same-brand = higher
+Two layers, so per-brand personalisation stays cheap:
+
+1. ``vertical_signals(vertical)`` — the expensive spatial pass. For every H3
+   res-9 cell it counts competitors / complementary venues / retail nearby and
+   measures distance to the nearest anchor and transit stop. Depends only on
+   the vertical, so it is computed once per vertical and cached.
+
+2. ``score_profile(profile)`` — applies one brand's weights and its own store
+   locations (cannibalisation) in Python. Milliseconds, cached in a small LRU.
+
+Signal keys (stable API names) and what they mean to an operator:
+  - surrounding_amenities  near unis, malls, offices, hospitals + complementary venues
+  - transit_accessibility  close to train / metro / bus
+  - demographic_match      busy streets (retail + F&B density as a foot-traffic proxy)
+  - market_saturation      few direct competitors within 500 m
+  - cannibalisation        far from the brand's own stores
 """
 
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
-from functools import lru_cache
-from typing import Iterable
+import threading
+from collections import OrderedDict
+from dataclasses import dataclass, field
 
 import h3
 
 from .db import get_con, get_config, get_vertical
 
-WEIGHTS = {
+WEIGHTS: dict[str, float] = {
     "market_saturation":      5,
     "cannibalisation":        5,
     "surrounding_amenities": 40,
     "transit_accessibility": 30,
     "demographic_match":     20,
 }
+SIGNALS = tuple(WEIGHTS)
 
-# Scoring tuning parameters — tunable without code changes
+# Scoring tuning parameters — tunable without code changes elsewhere
 PARAMS = {
-    "competitor_radius_m":   500,
+    "competitor_radius_m":    500,
     "complementary_radius_m": 300,
     "foot_traffic_radius_m":  300,
     # Normalization: at these values a signal hits score 0 or 100
@@ -39,9 +50,31 @@ PARAMS = {
     "foot_traffic_saturation": 40,     # 40+ retail/F&B POIs nearby -> score 100
     "transit_full_score_m":    300,
     "transit_zero_m":         1500,
-    "cannibal_full_score_m":  1500,    # >=1500m from same-brand -> score 100
+    "cannibal_full_score_m":  1500,    # >=1500m from own store -> score 100
     "cannibal_zero_m":         200,    # <=200m -> score 0
+    "ranking_min_spacing_m":   900,    # ranked sites are at least this far apart
 }
+
+# Importance (0–4 from onboarding) -> relative weight multiplier
+IMPORTANCE_MULTIPLIER = {0: 0.0, 1: 1.0, 2: 2.0, 3: 3.5, 4: 5.0}
+
+
+# ─── Data types ──────────────────────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class HexSignals:
+    h3_id: str
+    lat: float
+    lng: float
+    locality: str | None
+    region: str | None
+    postcode: str | None
+    n_competitors: int
+    n_complementary: int
+    n_retail: int
+    d_anchor_m: float | None
+    d_transit_m: float | None
 
 
 @dataclass
@@ -52,63 +85,226 @@ class HexScore:
     locality: str | None
     score: int
     components: dict[str, int]
-    signals_raw: dict[str, float]
+    signals_raw: dict[str, float | int | None]
     region: str | None = None
     postcode: str | None = None
+
+
+@dataclass(frozen=True)
+class Store:
+    lat: float
+    lng: float
+    fsq_place_id: str | None = None
+
+
+@dataclass
+class Profile:
+    """Everything that personalises a score. Built from a brand row."""
+
+    vertical: str
+    weights: dict[str, float] = field(default_factory=lambda: dict(WEIGHTS))
+    stores: tuple[Store, ...] = ()
+    regions: tuple[str, ...] = ()
+
+    def cache_key(self) -> tuple:
+        return (
+            self.vertical,
+            tuple(round(self.weights.get(k, 0.0), 2) for k in SIGNALS),
+            tuple(sorted((round(s.lat, 5), round(s.lng, 5)) for s in self.stores)),
+        )
+
+
+def weights_from_priorities(priorities: dict[str, int] | None) -> dict[str, float]:
+    """Turn 0–4 importance ratings into weights that sum to 100."""
+    if not priorities:
+        return dict(WEIGHTS)
+    raw = {
+        k: IMPORTANCE_MULTIPLIER.get(int(priorities.get(k, 2)), 2.0) for k in SIGNALS
+    }
+    total = sum(raw.values())
+    if total <= 0:
+        return dict(WEIGHTS)
+    return {k: round(v / total * 100, 1) for k, v in raw.items()}
+
+
+# ─── Geometry helpers ────────────────────────────────────────────────────────
+
+
+def haversine_m(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
+    p1, p2 = math.radians(lat1), math.radians(lat2)
+    dp = p2 - p1
+    dl = math.radians(lng2 - lng1)
+    a = math.sin(dp / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
+    return 2 * 6371000 * math.asin(math.sqrt(a))
+
+
+def _haversine_sql(a_lat: str, a_lng: str, b_lat: str, b_lng: str) -> str:
+    return f"""
+    (2 * 6371000 * ASIN(SQRT(
+      POWER(SIN(RADIANS({b_lat} - {a_lat}) / 2), 2) +
+      COS(RADIANS({a_lat})) * COS(RADIANS({b_lat})) *
+      POWER(SIN(RADIANS({b_lng} - {a_lng}) / 2), 2)
+    )))
+    """
+
+
+class _StoreGrid:
+    """Bucket stores into ~2 km cells so nearest-store lookup is O(1)-ish."""
+
+    CELL = 0.02  # degrees
+
+    def __init__(self, stores: tuple[Store, ...]):
+        self.cells: dict[tuple[int, int], list[Store]] = {}
+        for s in stores:
+            self.cells.setdefault(self._key(s.lat, s.lng), []).append(s)
+
+    def _key(self, lat: float, lng: float) -> tuple[int, int]:
+        return (math.floor(lat / self.CELL), math.floor(lng / self.CELL))
+
+    def nearest_m(self, lat: float, lng: float) -> float | None:
+        """Nearest store within ~2 km (beyond that cannibalisation is maxed anyway)."""
+        if not self.cells:
+            return None
+        ky, kx = self._key(lat, lng)
+        best: float | None = None
+        for dy in (-1, 0, 1):
+            for dx in (-1, 0, 1):
+                for s in self.cells.get((ky + dy, kx + dx), ()):
+                    d = haversine_m(lat, lng, s.lat, s.lng)
+                    if best is None or d < best:
+                        best = d
+        return best
 
 
 # ─── SQL helpers ─────────────────────────────────────────────────────────────
 
 
 def _match_any_clause(labels: list[str], alias: str = "primary_category") -> str:
-    """Build a SQL clause matching trimmed column against labels. Case-insensitive."""
+    """SQL clause matching trimmed column against config labels (trusted input)."""
     if not labels:
         return "FALSE"
-    quoted = [l.replace("'", "''") for l in labels]
-    return "(" + " OR ".join(f"LOWER(TRIM({alias})) = LOWER('{l}')" for l in quoted) + ")"
+    quoted = ", ".join("'" + l.lower().replace("'", "''") + "'" for l in labels)
+    return f"(LOWER(TRIM({alias})) IN ({quoted}))"
 
 
 def _category_tag_cte(vertical_key: str) -> str:
     """CTE that tags every POI with booleans used by the scorer."""
     v = get_vertical(vertical_key)
     cfg = get_config()
-    transit = cfg.get("transit_categories", [])
-    retail = cfg.get("retail_fnb_categories", [])
     return f"""
     tagged AS (
       SELECT
-        fsq_place_id,
-        name,
-        latitude,
-        longitude,
-        locality,
-        region,
-        postcode,
-        primary_category,
-        brand_slug,
-        h3_9,
-        {_match_any_clause(v["competitors"])} AS is_competitor,
+        fsq_place_id, name, latitude, longitude, locality, region, postcode,
+        primary_category, brand_slug, h3_9,
+        {_match_any_clause(v["competitors"])}   AS is_competitor,
         {_match_any_clause(v["complementary"])} AS is_complementary,
-        {_match_any_clause(v["anchors"])} AS is_anchor,
-        {_match_any_clause(transit)} AS is_transit,
-        {_match_any_clause(retail)} AS is_retail_fnb
+        {_match_any_clause(v["anchors"])}       AS is_anchor,
+        {_match_any_clause(cfg.get("transit_categories", []))}    AS is_transit,
+        {_match_any_clause(cfg.get("retail_fnb_categories", []))} AS is_retail_fnb
       FROM pois
     )
     """
 
 
-def _haversine_sql(a_lat_expr: str, a_lng_expr: str, b_lat_expr: str, b_lng_expr: str) -> str:
-    """Haversine meters between two SQL expressions."""
-    return f"""
-    (2 * 6371000 * ASIN(SQRT(
-      POWER(SIN(RADIANS({b_lat_expr} - {a_lat_expr}) / 2), 2) +
-      COS(RADIANS({a_lat_expr})) * COS(RADIANS({b_lat_expr})) *
-      POWER(SIN(RADIANS({b_lng_expr} - {a_lng_expr}) / 2), 2)
-    )))
+# ─── Layer 1: per-vertical spatial signals (expensive, cached) ───────────────
+
+_signals_cache: dict[str, list[HexSignals]] = {}
+_signals_lock = threading.Lock()
+
+
+def vertical_signals(vertical_key: str) -> list[HexSignals]:
+    get_vertical(vertical_key)  # raises KeyError for unknown verticals
+    hit = _signals_cache.get(vertical_key)
+    if hit is not None:
+        return hit
+    with _signals_lock:
+        hit = _signals_cache.get(vertical_key)
+        if hit is None:
+            hit = _compute_vertical_signals(vertical_key)
+            _signals_cache[vertical_key] = hit
+    return hit
+
+
+def _compute_vertical_signals(vertical_key: str) -> list[HexSignals]:
+    con = get_con()
+    tagged = _category_tag_cte(vertical_key)
+    p = PARAMS
+    d_sql = _haversine_sql("c.lat", "c.lng", "t.latitude", "t.longitude")
+    # bbox half-widths in degrees (Sydney ~ -33.9°: 1° lat ≈ 111 km, 1° lng ≈ 92 km)
+    near_lat, near_lng = 0.0055, 0.0065
+    anc_lat, anc_lng = 0.025, 0.030
+    tr_lat, tr_lng = 0.0145, 0.0175
+
+    sql = f"""
+    WITH {tagged},
+    cells AS (
+      SELECT
+        h3_9,
+        AVG(latitude)  AS lat,
+        AVG(longitude) AS lng,
+        MODE() WITHIN GROUP (ORDER BY locality) AS locality,
+        MODE() WITHIN GROUP (ORDER BY region)   AS region,
+        MODE() WITHIN GROUP (ORDER BY postcode) AS postcode
+      FROM tagged
+      WHERE h3_9 IS NOT NULL
+      GROUP BY h3_9
+    ),
+    near_pts AS (
+      SELECT latitude, longitude, is_competitor, is_complementary, is_retail_fnb
+      FROM tagged WHERE is_competitor OR is_complementary OR is_retail_fnb
+    ),
+    near AS (
+      SELECT h3_9,
+        COUNT(*) FILTER (WHERE is_competitor    AND d <= {p["competitor_radius_m"]})    AS n_competitors,
+        COUNT(*) FILTER (WHERE is_complementary AND d <= {p["complementary_radius_m"]}) AS n_complementary,
+        COUNT(*) FILTER (WHERE is_retail_fnb    AND d <= {p["foot_traffic_radius_m"]})  AS n_retail
+      FROM (
+        SELECT c.h3_9, t.is_competitor, t.is_complementary, t.is_retail_fnb, {d_sql} AS d
+        FROM cells c JOIN near_pts t
+          ON t.latitude  BETWEEN c.lat - {near_lat} AND c.lat + {near_lat}
+         AND t.longitude BETWEEN c.lng - {near_lng} AND c.lng + {near_lng}
+      ) GROUP BY h3_9
+    ),
+    anchor AS (
+      SELECT c.h3_9, MIN({d_sql}) AS d_anchor_m
+      FROM cells c JOIN (SELECT latitude, longitude FROM tagged WHERE is_anchor) t
+        ON t.latitude  BETWEEN c.lat - {anc_lat} AND c.lat + {anc_lat}
+       AND t.longitude BETWEEN c.lng - {anc_lng} AND c.lng + {anc_lng}
+      GROUP BY c.h3_9
+    ),
+    transit AS (
+      SELECT c.h3_9, MIN({d_sql}) AS d_transit_m
+      FROM cells c JOIN (SELECT latitude, longitude FROM tagged WHERE is_transit) t
+        ON t.latitude  BETWEEN c.lat - {tr_lat} AND c.lat + {tr_lat}
+       AND t.longitude BETWEEN c.lng - {tr_lng} AND c.lng + {tr_lng}
+      GROUP BY c.h3_9
+    )
+    SELECT c.h3_9, c.lat, c.lng, c.locality, c.region, c.postcode,
+           COALESCE(n.n_competitors, 0), COALESCE(n.n_complementary, 0), COALESCE(n.n_retail, 0),
+           a.d_anchor_m, tr.d_transit_m
+    FROM cells c
+    LEFT JOIN near n    USING (h3_9)
+    LEFT JOIN anchor a  USING (h3_9)
+    LEFT JOIN transit tr USING (h3_9)
+    ORDER BY c.h3_9
     """
+    rows = con.execute(sql).fetchall()
+    return [
+        HexSignals(
+            h3_id=r[0], lat=float(r[1]), lng=float(r[2]),
+            locality=r[3], region=r[4], postcode=r[5],
+            n_competitors=int(r[6]), n_complementary=int(r[7]), n_retail=int(r[8]),
+            d_anchor_m=float(r[9]) if r[9] is not None else None,
+            d_transit_m=float(r[10]) if r[10] is not None else None,
+        )
+        for r in rows
+    ]
 
 
-HAVERSINE_M_SQL = _haversine_sql("a_lat", "a_lng", "b_lat", "b_lng")
+def warm_cache() -> None:
+    """Precompute signals for every vertical (call at startup, off the request path)."""
+    for key in get_config()["verticals"]:
+        vertical_signals(key)
 
 
 # ─── Normalizers ─────────────────────────────────────────────────────────────
@@ -122,49 +318,318 @@ def _lerp_clamp(value: float, at_zero: float, at_hundred: float) -> float:
     return max(0.0, min(100.0, t * 100.0))
 
 
-def _score_market_saturation(n: int) -> float:
-    return _lerp_clamp(n, at_zero=PARAMS["competitor_saturation"], at_hundred=0)
-
-
-def _score_surrounding_amenities(dist_m: float | None, n_complementary: int) -> float:
+def _components(s: HexSignals, d_cannibal: float | None) -> dict[str, int]:
+    p = PARAMS
     s_anchor = 0.0
-    if dist_m is not None:
-        s_anchor = _lerp_clamp(
-            dist_m,
-            at_zero=PARAMS["anchor_zero_m"],
-            at_hundred=PARAMS["anchor_full_score_m"],
-        )
-    s_comp = _lerp_clamp(n_complementary, at_zero=0, at_hundred=10)
-    return (s_anchor * 0.5) + (s_comp * 0.5)
+    if s.d_anchor_m is not None:
+        s_anchor = _lerp_clamp(s.d_anchor_m, p["anchor_zero_m"], p["anchor_full_score_m"])
+    s_comp = _lerp_clamp(s.n_complementary, 0, 10)
+    return {
+        "market_saturation": round(_lerp_clamp(s.n_competitors, p["competitor_saturation"], 0)),
+        "cannibalisation": 100 if d_cannibal is None
+        else round(_lerp_clamp(d_cannibal, p["cannibal_zero_m"], p["cannibal_full_score_m"])),
+        "surrounding_amenities": round(s_anchor * 0.5 + s_comp * 0.5),
+        "transit_accessibility": 0 if s.d_transit_m is None
+        else round(_lerp_clamp(s.d_transit_m, p["transit_zero_m"], p["transit_full_score_m"])),
+        "demographic_match": round(_lerp_clamp(s.n_retail, 0, p["foot_traffic_saturation"])),
+    }
 
 
-def _score_demographic_match(n: int) -> float:
-    return _lerp_clamp(n, at_zero=0, at_hundred=PARAMS["foot_traffic_saturation"])
+# ─── Layer 2: per-profile scoring (cheap, LRU-cached) ────────────────────────
+
+_SCORE_CACHE_SIZE = 64
+_score_cache: "OrderedDict[tuple, list[HexScore]]" = OrderedDict()
+_score_lock = threading.Lock()
 
 
-def _score_transit_accessibility(dist_m: float | None) -> float:
-    if dist_m is None:
+def score_profile(profile: Profile) -> list[HexScore]:
+    key = profile.cache_key()
+    with _score_lock:
+        if key in _score_cache:
+            _score_cache.move_to_end(key)
+            return _score_cache[key]
+    result = _score_profile_impl(profile)
+    with _score_lock:
+        _score_cache[key] = result
+        _score_cache.move_to_end(key)
+        while len(_score_cache) > _SCORE_CACHE_SIZE:
+            _score_cache.popitem(last=False)
+    return result
+
+
+def _score_profile_impl(profile: Profile) -> list[HexScore]:
+    signals = vertical_signals(profile.vertical)
+    grid = _StoreGrid(profile.stores)
+    weights = profile.weights or WEIGHTS
+    wsum = sum(weights.get(k, 0.0) for k in SIGNALS) or 1.0
+    out: list[HexScore] = []
+    for s in signals:
+        d_cannibal = grid.nearest_m(s.lat, s.lng)
+        comps = _components(s, d_cannibal)
+        total = round(sum(comps[k] * weights.get(k, 0.0) for k in SIGNALS) / wsum)
+        out.append(HexScore(
+            h3_id=s.h3_id, lat=s.lat, lng=s.lng, locality=s.locality,
+            region=s.region, postcode=s.postcode, score=int(total), components=comps,
+            signals_raw={
+                "n_competitors": s.n_competitors,
+                "n_complementary": s.n_complementary,
+                "n_retail": s.n_retail,
+                "d_anchor_m": s.d_anchor_m,
+                "d_transit_m": s.d_transit_m,
+                "d_cannibal_m": d_cannibal,
+            },
+        ))
+    return out
+
+
+# ─── Regions + rankings ──────────────────────────────────────────────────────
+
+
+def regions() -> dict[str, dict]:
+    return get_config().get("regions", {})
+
+
+def in_regions(lat: float, lng: float, region_keys: tuple[str, ...] | list[str]) -> bool:
+    if not region_keys:
+        return True
+    regs = regions()
+    for k in region_keys:
+        r = regs.get(k)
+        if r and haversine_m(lat, lng, r["lat"], r["lng"]) <= r["radius_km"] * 1000:
+            return True
+    return False
+
+
+SIGNAL_PHRASES = {
+    "surrounding_amenities": "close to the places your customers already go",
+    "transit_accessibility": "an easy walk from public transport",
+    "demographic_match": "a busy, walkable retail strip",
+    "market_saturation": "few direct competitors nearby",
+    "cannibalisation": "well clear of your own stores",
+}
+
+
+def _fmt_m(m: float | None) -> str:
+    if m is None:
+        return "—"
+    return f"{round(m)} m" if m < 1000 else f"{m / 1000:.1f} km"
+
+
+def explain(h: HexScore, weights: dict[str, float]) -> dict:
+    """Plain-English reasons + risks for one site, ordered by weighted impact."""
+    contrib = sorted(SIGNALS, key=lambda k: h.components[k] * weights.get(k, 0), reverse=True)
+    raw = h.signals_raw
+    reasons: list[str] = []
+    for k in contrib:
+        if h.components[k] < 60 or weights.get(k, 0) <= 0:
+            continue
+        if k == "transit_accessibility" and raw["d_transit_m"] is not None:
+            reasons.append(f"Transit stop {_fmt_m(raw['d_transit_m'])} away")
+        elif k == "surrounding_amenities" and raw["d_anchor_m"] is not None:
+            reasons.append(f"Anchor venue {_fmt_m(raw['d_anchor_m'])} away, {raw['n_complementary']} complementary venues")
+        elif k == "demographic_match":
+            reasons.append(f"{raw['n_retail']} shops and venues within 300 m")
+        elif k == "market_saturation":
+            n = raw["n_competitors"]
+            reasons.append("No direct competitors within 500 m" if n == 0 else f"Only {n} competitor{'s' if n != 1 else ''} within 500 m")
+        elif k == "cannibalisation":
+            d = raw["d_cannibal_m"]
+            if d is not None:
+                reasons.append(f"Nearest own store {_fmt_m(d)} away")
+        if len(reasons) == 3:
+            break
+    risks: list[str] = []
+    if raw["n_competitors"] >= 4:
+        risks.append(f"{raw['n_competitors']} competitors within 500 m")
+    if raw["d_cannibal_m"] is not None and raw["d_cannibal_m"] < 800:
+        risks.append(f"Own store only {_fmt_m(raw['d_cannibal_m'])} away")
+    if raw["d_transit_m"] is None or raw["d_transit_m"] > 1200:
+        risks.append("Weak public transport access")
+    return {"reasons": reasons, "risks": risks}
+
+
+def rank_sites(profile: Profile, limit: int = 20, region_keys: tuple[str, ...] | None = None) -> list[dict]:
+    """Top sites for a profile: best-first, de-duplicated so picks are spread out."""
+    scores = score_profile(profile)
+    region_keys = profile.regions if region_keys is None else region_keys
+    pool = sorted(
+        (h for h in scores if in_regions(h.lat, h.lng, region_keys)),
+        key=lambda h: (h.score, h.components["market_saturation"]),
+        reverse=True,
+    )
+    picked: list[HexScore] = []
+    spacing = PARAMS["ranking_min_spacing_m"]
+    for h in pool:
+        if all(haversine_m(h.lat, h.lng, p.lat, p.lng) >= spacing for p in picked):
+            picked.append(h)
+            if len(picked) >= limit:
+                break
+    return [
+        {**hex_to_dict(h), "rank": i + 1, **explain(h, profile.weights)}
+        for i, h in enumerate(picked)
+    ]
+
+
+def hex_to_dict(h: HexScore) -> dict:
+    return {
+        "h3_id": h.h3_id,
+        "lat": h.lat,
+        "lng": h.lng,
+        "locality": h.locality,
+        "score": h.score,
+        "components": h.components,
+        "n_competitors": h.signals_raw["n_competitors"],
+        "n_complementary": h.signals_raw["n_complementary"],
+    }
+
+
+# ─── Diversity index ─────────────────────────────────────────────────────────
+
+
+def _compute_diversity(con, lat: float, lng: float, radius_m: int = 300) -> float:
+    """Normalised Shannon diversity (0–1) of POI categories within radius."""
+    # lat/lng are server-side floats (never user text) so inlining them is safe
+    dist_sql = _haversine_sql(repr(float(lat)), repr(float(lng)), "latitude", "longitude")
+    rows = con.execute(
+        f"""
+        SELECT primary_category, COUNT(*) FROM pois
+        WHERE primary_category IS NOT NULL
+          AND latitude BETWEEN ? AND ? AND longitude BETWEEN ? AND ?
+          AND {dist_sql} <= ?
+        GROUP BY primary_category
+        """,
+        [lat - 0.005, lat + 0.005, lng - 0.006, lng + 0.006, radius_m],
+    ).fetchall()
+    total = sum(r[1] for r in rows)
+    if total <= 1:
         return 0.0
-    return _lerp_clamp(
-        dist_m,
-        at_zero=PARAMS["transit_zero_m"],
-        at_hundred=PARAMS["transit_full_score_m"],
-    )
+    h_prime = -sum((c / total) * math.log(c / total) for _, c in rows if c)
+    h_max = math.log(len(rows)) if len(rows) > 1 else 1.0
+    return round(min(h_prime / h_max, 1.0), 2)
 
 
-def _score_cannibalisation(dist_m: float | None) -> float:
-    # No same-brand nearby = best case
-    if dist_m is None:
-        return 100.0
-    return _lerp_clamp(
-        dist_m,
-        at_zero=PARAMS["cannibal_zero_m"],
-        at_hundred=PARAMS["cannibal_full_score_m"],
-    )
+# ─── Site summary (deterministic, no LLM) ────────────────────────────────────
+
+
+def _site_summary(h: HexScore, competitors: list[dict], anchors: list[dict],
+                  complementary: list[dict], transit: list[dict], diversity: float) -> str:
+    area = h.locality or "This area"
+    raw = h.signals_raw
+    if h.score >= 80:
+        lead = f"**{area} is a strong fit at {h.score}/100.**"
+    elif h.score >= 65:
+        lead = f"**{area} is a good fit at {h.score}/100**, with a trade-off or two to check on the ground."
+    elif h.score >= 50:
+        lead = f"**{area} scores {h.score}/100.** Workable, but it needs a reason beyond the numbers."
+    else:
+        lead = f"**{area} scores {h.score}/100.** The basics are against it for your brand."
+    parts = [lead]
+
+    n = raw["n_competitors"]
+    if n == 0:
+        parts.append("- **Competition:** none of your direct competitors within 500 m.")
+    else:
+        near = f", the closest is {competitors[0]['name']} at {_fmt_m(competitors[0]['dist_m'])}" if competitors else ""
+        parts.append(f"- **Competition:** {n} within 500 m{near}.")
+
+    d = raw["d_cannibal_m"]
+    if d is None:
+        parts.append("- **Your network:** none of your stores within 2 km.")
+    else:
+        parts.append(f"- **Your network:** your nearest store is {_fmt_m(d)} away.")
+
+    if anchors:
+        a = anchors[0]
+        parts.append(f"- **Draw:** {a['name']} is {_fmt_m(a['dist_m'])} away; {len(complementary)} complementary venues close by, category mix {diversity:.2f}/1.")
+    else:
+        parts.append(f"- **Draw:** no major anchor within 3 km; category mix {diversity:.2f}/1.")
+
+    if transit:
+        parts.append(f"- **Transit:** {transit[0]['name']} is {_fmt_m(transit[0]['dist_m'])} away.")
+    else:
+        parts.append("- **Transit:** no station or stop within 2 km, so expect mostly local and car trade.")
+    return "\n".join(parts)
+
+
+# ─── Per-hex report ──────────────────────────────────────────────────────────
+
+
+def hex_report(profile: Profile, h3_id: str) -> dict:
+    """Full report for one cell under one brand's profile."""
+    if not h3.is_valid_cell(h3_id):
+        raise KeyError(f"Invalid h3 cell: {h3_id}")
+    con = get_con()
+    tagged = _category_tag_cte(profile.vertical)
+    all_scores = score_profile(profile)
+    hit = next((s for s in all_scores if s.h3_id == h3_id), None)
+    if hit is None:
+        lat, lng = h3.cell_to_latlng(h3_id)
+        hit = HexScore(
+            h3_id=h3_id, lat=lat, lng=lng, locality=None, score=0,
+            components={k: 0 for k in SIGNALS},
+            signals_raw={"n_competitors": 0, "n_complementary": 0, "n_retail": 0,
+                         "d_anchor_m": None, "d_transit_m": None, "d_cannibal_m": None},
+        )
+    lat, lng = hit.lat, hit.lng
+
+    total = len(all_scores)
+    higher = sum(1 for s in all_scores if s.score > hit.score)
+
+    dist_sql = _haversine_sql(repr(float(lat)), repr(float(lng)), "latitude", "longitude")
+
+    def nearest(flag_col: str, k: int, max_m: int = 2000) -> list[dict]:
+        box = max_m / 111_000 * 1.25
+        rows = con.execute(
+            f"""
+            WITH {tagged}
+            SELECT name, primary_category, latitude, longitude, locality, dist_m FROM (
+              SELECT *, {dist_sql} AS dist_m FROM tagged
+              WHERE {flag_col}
+                AND latitude BETWEEN ? AND ? AND longitude BETWEEN ? AND ?
+            ) WHERE dist_m <= ? ORDER BY dist_m LIMIT ?
+            """,
+            [lat - box, lat + box, lng - box * 1.2, lng + box * 1.2, max_m, k],
+        ).fetchall()
+        return [
+            {"name": r[0], "primary_category": r[1], "latitude": r[2], "longitude": r[3],
+             "locality": r[4], "dist_m": round(float(r[5]))}
+            for r in rows if r[5] is not None
+        ]
+
+    competitors = nearest("is_competitor", 5)
+    complementary = nearest("is_complementary", 5)
+    anchors = nearest("is_anchor", 3, max_m=3000)
+    transit = nearest("is_transit", 2, max_m=2000)
+    diversity = _compute_diversity(con, lat, lng)
+
+    return {
+        "h3_id": hit.h3_id,
+        "lat": hit.lat,
+        "lng": hit.lng,
+        "locality": hit.locality,
+        "region": hit.region,
+        "postcode": hit.postcode,
+        "score": hit.score,
+        "rank": higher + 1 if total else None,
+        "rank_total": total,
+        "rank_pct": round(higher / total * 100) if total else None,
+        "components": hit.components,
+        "signals_raw": hit.signals_raw,
+        "weights": profile.weights,
+        "nearest_competitors": competitors,
+        "nearest_complementary": complementary,
+        "nearest_anchors": anchors,
+        "nearest_transit": transit,
+        "diversity_index": diversity,
+        "summary": _site_summary(hit, competitors, anchors, complementary, transit, diversity),
+        **explain(hit, profile.weights),
+    }
+
+
+# ─── Legacy helpers (used by the optional chat assistant) ────────────────────
 
 
 def apply_scenario_weights(boost: list[str], suppress: list[str]) -> dict[str, float]:
-    """Compute adjusted weights from boost/suppress signal names."""
     weights = {k: float(v) for k, v in WEIGHTS.items()}
     for k in boost:
         if k in weights:
@@ -176,366 +641,23 @@ def apply_scenario_weights(boost: list[str], suppress: list[str]) -> dict[str, f
     return {k: round(v / total * 100, 1) for k, v in weights.items()}
 
 
-# ─── Caching layer ──────────────────────────────────────────────────────────
-
-# Cache keyed on (vertical, brand_slug, locality, weight_overrides_frozen)
-_score_cache: dict[tuple, list[HexScore]] = {}
-
-
-def _cache_key(
-    vertical: str,
-    brand_slug: str | None,
-    locality: str | None,
-    weight_overrides: dict[str, float] | None = None,
-) -> tuple:
-    weights_key = tuple(sorted(weight_overrides.items())) if weight_overrides else ()
-    return (vertical, brand_slug or "", locality or "", weights_key)
+def stores_from_brand_slug(brand_slug: str | None) -> tuple[Store, ...]:
+    if not brand_slug:
+        return ()
+    rows = get_con().execute(
+        "SELECT latitude, longitude, fsq_place_id FROM pois WHERE brand_slug LIKE ? || '%' LIMIT 500",
+        [brand_slug.lower()],
+    ).fetchall()
+    return tuple(Store(float(r[0]), float(r[1]), r[2]) for r in rows)
 
 
-def _get_cached_scores(
-    vertical: str,
-    brand_slug: str | None = None,
-    locality: str | None = None,
-    weight_overrides: dict[str, float] | None = None,
-) -> list[HexScore]:
-    """Return cached scores or compute and cache them."""
-    key = _cache_key(vertical, brand_slug, locality, weight_overrides)
-    if key not in _score_cache:
-        _score_cache[key] = _score_hexes_impl(vertical, brand_slug, locality, weight_overrides)
-    return _score_cache[key]
-
-
-# ─── Main scoring query ──────────────────────────────────────────────────────
-
-
-def _score_hexes_impl(
-    vertical_key: str,
-    brand_slug: str | None = None,
-    locality_filter: str | None = None,
-    weight_overrides: dict[str, float] | None = None,
-) -> list[HexScore]:
-    """Internal implementation of score_hexes (called by cache)."""
-    con = get_con()
-    tagged = _category_tag_cte(vertical_key)
-
-    locality_where = ""
+def score_hexes(vertical_key: str, brand_slug: str | None = None,
+                locality_filter: str | None = None,
+                weight_overrides: dict[str, float] | None = None) -> list[HexScore]:
+    prof = Profile(vertical=vertical_key, weights=weight_overrides or dict(WEIGHTS),
+                   stores=stores_from_brand_slug(brand_slug))
+    out = score_profile(prof)
     if locality_filter:
-        safe = locality_filter.replace("'", "''")
-        locality_where = f"AND LOWER(h.locality) LIKE LOWER('%{safe}%')"
-
-    sql = f"""
-    WITH {tagged},
-    hex_centers AS (
-      SELECT
-        h3_9,
-        AVG(latitude)  AS lat,
-        AVG(longitude) AS lng,
-        MODE() WITHIN GROUP (ORDER BY locality) AS locality,
-        MODE() WITHIN GROUP (ORDER BY region)   AS region,
-        MODE() WITHIN GROUP (ORDER BY postcode) AS postcode
-      FROM tagged
-      WHERE h3_9 IS NOT NULL
-      GROUP BY h3_9
-    ),
-    joined AS (
-      SELECT
-        hc.h3_9, hc.lat AS a_lat, hc.lng AS a_lng,
-        hc.locality, hc.region, hc.postcode,
-        t.latitude AS b_lat, t.longitude AS b_lng,
-        t.is_competitor, t.is_complementary, t.is_anchor,
-        t.is_transit, t.is_retail_fnb, t.brand_slug
-      FROM hex_centers hc
-      CROSS JOIN tagged t
-      WHERE
-        -- bbox prefilter to keep this cheap (~0.03 deg ≈ 3km)
-        t.latitude  BETWEEN hc.lat - 0.03 AND hc.lat + 0.03
-        AND t.longitude BETWEEN hc.lng - 0.035 AND hc.lng + 0.035
-    ),
-    with_dist AS (
-      SELECT *, {HAVERSINE_M_SQL} AS dist_m FROM joined
-    ),
-    agg AS (
-      SELECT
-        h3_9,
-        ANY_VALUE(a_lat) AS lat,
-        ANY_VALUE(a_lng) AS lng,
-        ANY_VALUE(locality) AS locality,
-        ANY_VALUE(region)   AS region,
-        ANY_VALUE(postcode) AS postcode,
-        COUNT(*) FILTER (WHERE is_competitor AND dist_m <= {PARAMS["competitor_radius_m"]}) AS n_competitors,
-        COUNT(*) FILTER (WHERE is_complementary AND dist_m <= {PARAMS["complementary_radius_m"]}) AS n_complementary,
-        COUNT(*) FILTER (WHERE is_retail_fnb   AND dist_m <= {PARAMS["foot_traffic_radius_m"]}) AS n_retail,
-        MIN(dist_m) FILTER (WHERE is_anchor)  AS d_anchor_m,
-        MIN(dist_m) FILTER (WHERE is_transit) AS d_transit_m,
-        {"MIN(dist_m) FILTER (WHERE brand_slug LIKE '" + brand_slug.replace(chr(39), chr(39)*2) + "%' AND dist_m > 0)" if brand_slug else 'NULL'}
-          AS d_cannibal_m
-      FROM with_dist h
-      WHERE 1=1
-        {locality_where}
-      GROUP BY h3_9
-    )
-    SELECT * FROM agg
-    ORDER BY h3_9
-    """
-
-    rows = con.execute(sql).fetchall()
-    cols = [c[0] for c in con.description]
-
-    out: list[HexScore] = []
-    for row in rows:
-        d = dict(zip(cols, row))
-        components = {
-            "market_saturation":     round(_score_market_saturation(d["n_competitors"])),
-            "cannibalisation":       round(_score_cannibalisation(d["d_cannibal_m"])),
-            "surrounding_amenities": round(_score_surrounding_amenities(d["d_anchor_m"], d["n_complementary"])),
-            "transit_accessibility": round(_score_transit_accessibility(d["d_transit_m"])),
-            "demographic_match":     round(_score_demographic_match(d["n_retail"])),
-        }
-        effective_weights = weight_overrides or WEIGHTS
-        total = round(
-            sum(components[k] * (effective_weights[k] / 100.0) for k in effective_weights)
-        )
-        out.append(
-            HexScore(
-                h3_id=d["h3_9"],
-                lat=float(d["lat"]),
-                lng=float(d["lng"]),
-                locality=d["locality"],
-                region=d.get("region"),
-                postcode=d.get("postcode"),
-                score=int(total),
-                components=components,
-                signals_raw={
-                    "n_competitors":   int(d["n_competitors"]),
-                    "n_complementary": int(d["n_complementary"]),
-                    "n_retail":        int(d["n_retail"]),
-                    "d_anchor_m":      float(d["d_anchor_m"]) if d["d_anchor_m"] is not None else None,
-                    "d_transit_m":     float(d["d_transit_m"]) if d["d_transit_m"] is not None else None,
-                    "d_cannibal_m":    float(d["d_cannibal_m"]) if d["d_cannibal_m"] is not None else None,
-                },
-            )
-        )
+        q = locality_filter.lower()
+        out = [h for h in out if h.locality and q in h.locality.lower()]
     return out
-
-
-def score_hexes(
-    vertical_key: str,
-    brand_slug: str | None = None,
-    locality_filter: str | None = None,
-    weight_overrides: dict[str, float] | None = None,
-) -> list[HexScore]:
-    """Score every hex that has POIs; optionally filter by locality.
-
-    Uses caching so hex_report() and compare() don't re-score 12K hexes each time.
-
-    brand_slug: normalized slug of the user's own brand (for cannibalization).
-                If None, cannibalization signal is neutral (100).
-    weight_overrides: if provided, replaces WEIGHTS for the weighted sum only.
-    """
-    return _get_cached_scores(vertical_key, brand_slug, locality_filter, weight_overrides)
-
-
-# ─── Diversity Index ─────────────────────────────────────────────────────────
-
-
-def _compute_diversity(con, lat: float, lng: float, radius_m: int = 300) -> float:
-    """Compute Shannon diversity index (H') of POI categories within radius.
-    
-    Returns a normalized 0–1 score where 1 = perfectly diverse.
-    """
-    dist_sql = _haversine_sql(str(lat), str(lng), "latitude", "longitude")
-    sql = f"""
-    SELECT primary_category, COUNT(*) AS cnt
-    FROM pois
-    WHERE primary_category IS NOT NULL
-      AND latitude BETWEEN {lat} - 0.005 AND {lat} + 0.005
-      AND longitude BETWEEN {lng} - 0.006 AND {lng} + 0.006
-      AND {dist_sql} <= {radius_m}
-    GROUP BY primary_category
-    """
-    rows = con.execute(sql).fetchall()
-    if not rows:
-        return 0.0
-    
-    total = sum(r[1] for r in rows)
-    if total <= 1:
-        return 0.0
-    
-    # Shannon H' = -Σ (pi * ln(pi))
-    h_prime = 0.0
-    for _, cnt in rows:
-        p = cnt / total
-        if p > 0:
-            h_prime -= p * math.log(p)
-    
-    # Normalize to 0–1 using max possible H' = ln(S)
-    s = len(rows)  # number of unique categories
-    h_max = math.log(s) if s > 1 else 1.0
-    return round(min(h_prime / h_max, 1.0), 2)
-
-
-# ─── AI Insight generator ───────────────────────────────────────────────────
-
-
-def _generate_ai_insight(
-    locality: str | None,
-    score: int,
-    signals_raw: dict,
-    nearest_competitors: list[dict],
-    nearest_anchors: list[dict],
-    nearest_complementary: list[dict],
-    nearest_transit: list[dict],
-    diversity: float,
-) -> str:
-    """Generate a high-end, data-backed enterprise insight paragraph."""
-    area = locality or "The designated area"
-    parts = []
-    
-    # Executive assessment
-    if score >= 85:
-        parts.append(f"**Executive Summary:** {area} presents a highly lucrative site-selection opportunity with a composite score of {score}/100, driven by minimal market saturation and strong local synergies.")
-    elif score >= 70:
-        parts.append(f"**Executive Summary:** {area} yields a solid rating of {score}/100, indicating viable expansion potential with a balanced risk-return profile.")
-    elif score >= 50:
-        parts.append(f"**Executive Summary:** {area} scores {score}/100. This location carries moderate viability risk and warrants careful tactical review before greenlighting investment.")
-    else:
-        parts.append(f"**Executive Summary:** {area} scores {score}/100. We flag this as a high-risk zone—location criteria fall well below enterprise thresholds for successful expansion.")
-    
-    # 1. Market Saturation
-    n_comp = signals_raw.get("n_competitors", 0)
-    if n_comp == 0:
-        parts.append("• **Market Saturation:** Highly favorable. A total absence of direct competitors within 500m creates immediate white-space capture potential.")
-    elif n_comp <= 2:
-        parts.append(f"• **Market Saturation:** Favorable. Isolated competitive presence ({n_comp} identified within the catchment), suggesting ample headroom for market share acquisition.")
-    else:
-        closest = nearest_competitors[0] if nearest_competitors else None
-        dist_str = f" as close as {closest['dist_m']}m" if closest else ""
-        parts.append(f"• **Market Saturation:** High risk. Severe catchment overlap with {n_comp} existing venues{dist_str}. Margin compression and reduced same-store sales trajectories are likely without significant differentiation.")
-    
-    # 2. Cannibalisation
-    d_cannibal = signals_raw.get("d_cannibal_m")
-    if d_cannibal is not None and d_cannibal < 500:
-        parts.append(f"• **Cannibalisation:** Critical warning. Existing brand network node is just {round(d_cannibal)}m away. Proceeding risks significant customer redistribution and network-wide yield degradation.")
-    elif d_cannibal is not None and d_cannibal < 1500:
-        parts.append(f"• **Cannibalisation:** Moderate risk. Closest brand presence is at {round(d_cannibal)}m—requiring tactical marketing alignment to avoid customer extraction.")
-    else:
-        parts.append("• **Cannibalisation:** Negligible risk. Zero same-brand proximity threats detected within the core trade area.")
-
-    # 3. Surrounding Amenities & 4. Demographic Match proxy
-    n_comp_nearby = len(nearest_complementary)
-    anchor_str = ""
-    if nearest_anchors:
-        anchor = nearest_anchors[0]
-        anchor_str = f" and major anchor draw ({anchor['name']} at {anchor['dist_m']}m)"
-    
-    if n_comp_nearby >= 3 or nearest_anchors:
-        parts.append(f"• **Surrounding Amenities & Demographics:** {n_comp_nearby} complementary businesses{anchor_str} drive robust auxiliary footfall. A category diversity rating of {diversity}/1.0 indicates strong local purchasing vitality.")
-    else:
-        parts.append(f"• **Surrounding Amenities & Demographics:** Critical lack of complementary F&B venues and anchors. A low category diversity ({diversity}/1.0) points to a weak demographic pull for this site.")
-
-    # 5. Transit
-    if nearest_transit:
-        t = nearest_transit[0]
-        parts.append(f"• **Transit Accessibility:** Proximity to {t['name']} ({t['dist_m']}m) anchors the transit corridor, optimizing workforce logistics and amplifying peak-hour commuter capture.")
-    else:
-        parts.append("• **Transit Accessibility:** Limited immediate mass-transit nodes, weighting reliance toward local residential or drive-by traffic.")
-    
-    return "\n\n".join(parts)
-
-
-# ─── Per-hex drill-down (for the report panel) ───────────────────────────────
-
-
-def hex_report(vertical_key: str, h3_id: str, brand_slug: str | None = None) -> dict:
-    """Return a full report for a single hex: score, components, top nearby POIs."""
-    con = get_con()
-    tagged = _category_tag_cte(vertical_key)
-
-    # Resolve hex center
-    lat, lng = h3.cell_to_latlng(h3_id)
-
-    # Use cached scores instead of re-scoring all 12K hexes
-    all_scores = _get_cached_scores(vertical_key, brand_slug=brand_slug)
-    hit = next((s for s in all_scores if s.h3_id == h3_id), None)
-    if hit is None:
-        # Compute standalone (hex may be outside POI data but within Sydney)
-        hit = HexScore(
-            h3_id=h3_id, lat=lat, lng=lng, locality=None, score=0,
-            components={k: 0 for k in WEIGHTS},
-            signals_raw={
-                "n_competitors": 0, "n_complementary": 0, "n_retail": 0,
-                "d_anchor_m": None, "d_transit_m": None, "d_cannibal_m": None,
-            },
-        )
-
-    # Percentile rank among all scored hexes (1 = best, N = worst)
-    total_hexes = len(all_scores)
-    higher = sum(1 for s in all_scores if s.score > hit.score)
-    rank = higher + 1 if total_hexes else None
-    pct = round((higher / total_hexes) * 100) if total_hexes else None  # top X%
-
-    # Nearest competitors (top 5), nearest complementary (top 5), nearest anchors (top 3)
-    def nearest(flag_col: str, k: int, max_m: int = 2000) -> list[dict]:
-        dist_sql = _haversine_sql(str(lat), str(lng), "latitude", "longitude")
-        sql = f"""
-        WITH {tagged}
-        SELECT
-          name, primary_category, latitude, longitude, locality,
-          {dist_sql} AS dist_m
-        FROM tagged
-        WHERE {flag_col} AND {dist_sql} <= {max_m}
-        ORDER BY dist_m
-        LIMIT {k}
-        """
-        rows = con.execute(sql).fetchall()
-        cols = [c[0] for c in con.description]
-        out = []
-        for r in rows:
-            d = dict(zip(cols, r))
-            if d["dist_m"] is None:
-                continue
-            d["dist_m"] = round(float(d["dist_m"]))
-            out.append(d)
-        return out
-
-    competitors = nearest("is_competitor", 5)
-    complementary = nearest("is_complementary", 5)
-    anchors = nearest("is_anchor", 3, max_m=3000)
-    transit = nearest("is_transit", 2, max_m=2000)
-
-    # Compute real diversity index
-    diversity = _compute_diversity(con, lat, lng)
-
-    # Generate AI insight
-    ai_insight = _generate_ai_insight(
-        locality=hit.locality,
-        score=hit.score,
-        signals_raw=hit.signals_raw,
-        nearest_competitors=competitors,
-        nearest_anchors=anchors,
-        nearest_complementary=complementary,
-        nearest_transit=transit,
-        diversity=diversity,
-    )
-
-    return {
-        "h3_id": hit.h3_id,
-        "lat": hit.lat,
-        "lng": hit.lng,
-        "locality": hit.locality,
-        "region": hit.region,
-        "postcode": hit.postcode,
-        "score": hit.score,
-        "rank": rank,
-        "rank_total": total_hexes,
-        "rank_pct": pct,
-        "components": hit.components,
-        "signals_raw": hit.signals_raw,
-        "weights": WEIGHTS,
-        "nearest_competitors": competitors,
-        "nearest_complementary": complementary,
-        "nearest_anchors": anchors,
-        "nearest_transit": transit,
-        "diversity_index": diversity,
-        "ai_insight": ai_insight,
-    }
