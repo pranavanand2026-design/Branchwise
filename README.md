@@ -1,93 +1,49 @@
 # Branchwise
 
-**AI-powered site selection for food and beverage operators.**
+Branchwise ranks every Sydney neighbourhood for a food and drink brand's next store and explains why, so you can choose before you sign a lease.
 
-## Problem
-
-Mid-size F&B brands (3–50 stores) make expansion decisions based on broker shortlists and gut feel. Enterprise location intelligence platforms exist but are priced and designed for analysts, not operators. There is no tool that gives a growing brand a fast, data-backed answer to: *where should we open next?*
-
-## Solution
-
-Branchwise scores every 300m zone across Sydney against five spatial signals derived from 233,000 real Foursquare place records. The result is a live heatmap of opportunity across 12,270 hex zones — ranked, explained, and queryable in plain English.
-
-Ask a question. The AI adjusts the scoring weights to match your intent, rescores the entire city, and returns a specific location with a full breakdown.
+**Live:** https://branchwise-564404959706.australia-southeast1.run.app
 
 ## Architecture
 
+```mermaid
+flowchart LR
+    subgraph web["Browser"]
+        UI["React app<br/>map, top picks, shortlist"]
+        Score["In-browser scoring<br/>10,765 zones in ~20 ms"]
+    end
+
+    subgraph run["Cloud Run"]
+        API["FastAPI<br/>auth, brand, shortlist, signals"]
+        AI["Branchwise AI<br/>tool-calling agent"]
+    end
+
+    subgraph data["Data"]
+        POI[("Foursquare OS Places<br/>DuckDB + H3")]
+        FS[("Firestore<br/>accounts, shortlists, rate limits")]
+    end
+
+    Groq["Groq LLM"]
+    Tiles["OpenFreeMap tiles"]
+
+    UI --> Score
+    UI -- "signals, once a day" --> API
+    UI -- chat --> AI
+    UI --> Tiles
+    API --> POI
+    API --> FS
+    AI --> API
+    AI --> Groq
 ```
-Data Layer        233K Sydney POIs in a single Parquet file (Foursquare OS Places)
-Scoring Engine    5 spatial signals per hex → normalised 0–100 → weighted opportunity score
-API Layer         FastAPI — /heatmap · /report · /compare · /pins · /chat
-AI Layer          Claude with tool-use — adjusts weights, searches, compares, explains
-Frontend          React + deck.gl H3HexagonLayer + MapLibre
-```
-
-## Scoring Signals
-
-| Signal | Weight | How computed |
-|---|---|---|
-| Surrounding activity | 40% | Anchor proximity + complementary venue density within 300m |
-| Transit access | 30% | Haversine distance to nearest rail, bus, or ferry stop |
-| Demographic match | 20% | Retail and F&B density within 300m as foot traffic proxy |
-| Market saturation | 5% | Competitor count within 500m |
-| Store overlap | 5% | Distance to nearest same-brand store |
-
-## Stack
-
-- **Backend:** FastAPI + DuckDB + Python
-- **Frontend:** React + Vite + deck.gl + MapLibre + Zustand
-- **AI:** Anthropic Claude with tool-use
-- **Data:** Foursquare Open Source Places — 233K Sydney POIs
 
 ## Run locally
 
 ```bash
-# 1. Python 3.12 env (DuckDB has no wheels for 3.15 yet)
 uv venv --python 3.12 .venv && uv pip install --python .venv/bin/python -r requirements.txt
-
-# 2. Data: real Foursquare data if HF_TOKEN is in .env, else synthetic demo data
 cp .env.example .env
-.venv/bin/python scripts/prepare_sydney.py
-.venv/bin/python scripts/build_signals.py   # precomputes per-category signals for fast start-up
-
-# 3. Backend (http://127.0.0.1:8000)
+.venv/bin/python scripts/prepare_sydney.py && .venv/bin/python scripts/build_signals.py
 .venv/bin/uvicorn backend.app.main:app --reload --port 8000
-
-# 4. Frontend (separate terminal): landing at /, app at /app
-cd frontend && npm install && npm run dev
+cd frontend && npm install && npm run dev        # http://localhost:5173
 ```
 
-Tests: `.venv/bin/python -m pytest backend/tests -q` (runs every test on SQLite and on an in-memory Firestore stand-in)
-
-Scoring parity: `.venv/bin/python scripts/check_scoring_parity.py` checks the browser scorer against the Python engine zone by zone.
-
-## Accounts and security
-
-- Argon2id password hashes; HMAC-signed session cookies (httpOnly, SameSite=Lax, Secure in production) carrying a session version, so logout, password change and account deletion revoke every device
-- CSRF guard (`X-Requested-With: branchwise` on every write), CORS limited to `ALLOWED_ORIGINS`, rate limits stored in the shared database so all instances count together
-- Every brand, store and shortlist route is scoped to the signed-in user; account deletion removes everything
-- Storage: SQLite for local work (`STORAGE=sqlite`, `data/app_v2.db`), Firestore in production (`STORAGE=firestore`)
-
-## Built to scale for free
-
-- The server sends each category's raw signals once (`/api/signals/{vertical}`, ~180 KB gzipped, cached a day). The browser scores all 10,765 zones for the brand in ~20 ms, so the map, Top picks and AI what-ifs cost the server nothing per user.
-- Server instances are stateless: sessions are signed cookies, data and rate limits live in Firestore, so Cloud Run can add instances under load and scale to zero when idle.
-- Basemap tiles come from OpenFreeMap (free, no key, no usage cap).
-
-## Assistant
-
-The Assistant tab talks to a Groq-hosted model (`GROQ_API_KEY` in `.env`) that can only act through tools on the same scoring engine: re-weight priorities, limit areas, rank areas, look up places, report on a suburb and save to the shortlist. Re-weighting is a what-if shown on the map until you save it. Without a key, or when the free quota runs out, a keyword-based fallback answers instead. Scores, reasons and summaries are always computed by the engine, never written by the model.
-
-## Deploy (Google Cloud Run)
-
-Live: https://branchwise-564404959706.australia-southeast1.run.app (project `branchwise-514403`, Sydney).
-
-```bash
-deploy/cloudrun.sh
-```
-
-Builds the `Dockerfile` on Cloud Build (no local Docker needed) and deploys with 0–3 instances, 1 vCPU / 1 GiB.
-One-time setup in the project: Firestore `(default)` database in `australia-southeast1` (free tier, TTL on
-`counters.expires`), service account `branchwise-run` (`roles/datastore.user`), secrets `branchwise-secret-key`
-and `branchwise-groq-key`, `roles/run.builder` on the default compute account, and an A$2 budget alert.
-`.gcloudignore` keeps `.env`, local databases and the dev session key out of the upload.
+Tests: `.venv/bin/python -m pytest backend/tests -q`. Deploy: `deploy/cloudrun.sh`.
