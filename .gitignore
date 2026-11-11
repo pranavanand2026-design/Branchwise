@@ -37,3 +37,8 @@ data/*.db
 data/*.db-shm
 data/*.db-wal
 data/.secret_key
+
+# internal notes (kept locally, not published)
+CLAUDE.md
+PLAN.md
+dataset_overview.md
