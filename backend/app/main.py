@@ -18,20 +18,18 @@ from . import auth, brand
 from .db import DATA_PARQUET, get_con
 from .scoring import warm_cache
 from .security import csrf_ok, current_user, enforce_rate
-from .storage import get_db
-from sqlalchemy.orm import Session
 from typing import Literal
 from .db import get_config
 from .assistant import provider_status as assistant_status
 from .settings import ROOT, settings
-from .storage import User, init_db
+from .repo import Repo, UserRec, get_repo
 
 log = logging.getLogger("branchwise")
 
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    init_db()
+    get_repo()  # create tables / connect early
     if DATA_PARQUET.exists():
         # Precompute per-category signals in the background so the first map load is fast
         threading.Thread(target=warm_cache, daemon=True).start()
@@ -111,7 +109,7 @@ class AssistantRequest(BaseModel):
 
 
 @app.post("/api/assistant")
-def api_assistant(req: AssistantRequest, user: User = Depends(current_user), db: Session = Depends(get_db)) -> dict:
+def api_assistant(req: AssistantRequest, user: UserRec = Depends(current_user), repo: Repo = Depends(get_repo)) -> dict:
     from . import assistant
     from .scoring import SIGNALS
 
@@ -125,7 +123,7 @@ def api_assistant(req: AssistantRequest, user: User = Depends(current_user), db:
     enforce_rate(f"assistant-day:{user.id}", limit=200, window_s=86400)
     pri = {k: int(v) for k, v in (req.priorities or {}).items() if k in SIGNALS and 0 <= int(v) <= 4} or None
     regions = [r for r in req.regions if r in get_config().get("regions", {})] if req.regions is not None else None
-    return assistant.chat(user.brand, db, [m.model_dump() for m in req.messages], pri, regions)
+    return assistant.chat(user, repo, [m.model_dump() for m in req.messages], pri, regions)
 
 
 # ─── Production: serve the built frontend from the same origin ───────────────

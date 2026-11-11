@@ -227,6 +227,8 @@ const put = <T>(url: string, body: unknown) => request<T>("PUT", url, body);
 const patch = <T>(url: string, body: unknown) => request<T>("PATCH", url, body);
 const del = <T>(url: string, body?: unknown) => request<T>("DELETE", url, body);
 
+import type { SignalsFile } from "./scoring";
+
 export const api = {
   health: () => get<Health>("/api/health"),
   meta: () => get<Meta>("/api/meta"),
@@ -248,6 +250,7 @@ export const api = {
     }),
   searchPlaces: (q: string) => get<{ places: Place[] }>(`/api/places/search?q=${encodeURIComponent(q)}`),
 
+  signals: (vertical: string) => get<SignalsFile>(`/api/signals/${encodeURIComponent(vertical)}`),
   heatmap: (pri?: string) => get<{ vertical: string; count: number; hexes: HexResult[] }>(`/api/heatmap${pri ? `?pri=${encodeURIComponent(pri)}` : ""}`),
   rankings: (limit = 20, regions?: string[], pri?: string) => {
     const q = new URLSearchParams({ limit: String(limit) });

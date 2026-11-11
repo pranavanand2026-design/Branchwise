@@ -30,13 +30,12 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import h3
-from sqlalchemy.orm import Session
 
 from .db import get_con, get_config
 from .scoring import (
     SIGNALS, Profile, hex_report, rank_sites, score_profile, weights_from_priorities,
 )
-from .storage import Brand, SavedSite
+from .repo import BrandRec, Repo, UserRec
 
 log = logging.getLogger("branchwise.assistant")
 
@@ -144,11 +143,15 @@ def provider_status() -> dict:
 
 @dataclass
 class Turn:
-    brand: Brand
-    db: Session
+    user: UserRec
+    repo: Repo
     priorities: dict[str, int] | None   # what-if priorities (None = saved profile)
     regions: list[str] | None           # what-if areas (None = saved profile)
     actions: list[dict] = field(default_factory=list)
+
+    @property
+    def brand(self) -> BrandRec:
+        return self.user.brand  # type: ignore[return-value]
 
     def effective_priorities(self) -> dict[str, int]:
         return self.priorities or dict(self.brand.priorities or {k: 2 for k in SIGNALS})
@@ -332,17 +335,18 @@ def t_area_report(turn: Turn, suburb: str) -> dict:
 
 
 def t_save_to_shortlist(turn: Turn, h3_id: str, note: str | None = None) -> dict:
+    from fastapi import HTTPException
+
+    from .brand import save_site_for
+
     if not h3.is_valid_cell(h3_id):
         return {"error": "Unknown area id."}
-    existing = next((s for s in turn.brand.saved_sites if s.h3_id == h3_id), None)
-    if existing:
+    if turn.repo.get_saved(turn.user.id, h3_id):
         return {"ok": True, "already_saved": True}
-    hit = next((h for h in score_profile(turn.profile()) if h.h3_id == h3_id), None)
-    lat, lng = (hit.lat, hit.lng) if hit else h3.cell_to_latlng(h3_id)
-    site = SavedSite(brand_id=turn.brand.id, h3_id=h3_id, locality=hit.locality if hit else None,
-                     lat=lat, lng=lng, score_at_save=hit.score if hit else 0, note=(note or "").strip()[:300] or None)
-    turn.db.add(site)
-    turn.db.commit()
+    try:
+        site = save_site_for(turn.user, turn.repo, h3_id, note, turn.priorities)
+    except HTTPException as e:
+        return {"error": str(e.detail)}
     turn.actions.append({"type": "saved", "h3_id": h3_id, "suburb": site.locality})
     return {"ok": True, "saved": site.locality}
 
@@ -559,9 +563,9 @@ def _offline_chat(turn: Turn, text: str) -> str:
 # ─── Entry point ─────────────────────────────────────────────────────────────
 
 
-def chat(brand: Brand, db: Session, messages: list[dict], priorities: dict[str, int] | None,
+def chat(user: UserRec, repo: Repo, messages: list[dict], priorities: dict[str, int] | None,
          regions: list[str] | None) -> dict:
-    turn = Turn(brand=brand, db=db, priorities=priorities, regions=regions)
+    turn = Turn(user=user, repo=repo, priorities=priorities, regions=regions)
     history = [{"role": m["role"], "content": m["content"][:1500]} for m in messages[-MAX_HISTORY:]
                if m.get("role") in ("user", "assistant") and m.get("content")]
     last_user = next((m["content"] for m in reversed(history) if m["role"] == "user"), "")

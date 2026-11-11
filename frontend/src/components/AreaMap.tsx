@@ -1,7 +1,7 @@
 // Small Sydney map for choosing areas: each area is a circle you click to add or remove.
 import Map, { Layer, Marker, Source, type MapLayerMouseEvent } from "react-map-gl/maplibre";
 
-const BASEMAP = "https://basemaps.cartocdn.com/gl/positron-gl-style/style.json";
+const BASEMAP = "https://tiles.openfreemap.org/styles/positron";
 
 type Label = { key: string; label: string; lat: number; lng: number; on: boolean };
 

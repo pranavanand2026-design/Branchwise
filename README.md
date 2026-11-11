@@ -48,6 +48,7 @@ uv venv --python 3.12 .venv && uv pip install --python .venv/bin/python -r requi
 # 2. Data: real Foursquare data if HF_TOKEN is in .env, else synthetic demo data
 cp .env.example .env
 .venv/bin/python scripts/prepare_sydney.py
+.venv/bin/python scripts/build_signals.py   # precomputes per-category signals for fast start-up
 
 # 3. Backend (http://127.0.0.1:8000)
 .venv/bin/uvicorn backend.app.main:app --reload --port 8000
@@ -56,14 +57,22 @@ cp .env.example .env
 cd frontend && npm install && npm run dev
 ```
 
-Tests: `.venv/bin/python -m pytest backend/tests -q`
+Tests: `.venv/bin/python -m pytest backend/tests -q` (runs every test on SQLite and on an in-memory Firestore stand-in)
+
+Scoring parity: `.venv/bin/python scripts/check_scoring_parity.py` checks the browser scorer against the Python engine zone by zone.
 
 ## Accounts and security
 
-- Argon2id password hashes; opaque server-side sessions in httpOnly, SameSite=Lax cookies (only a SHA-256 of each token is stored)
-- CSRF guard (`X-Requested-With: branchwise` on every write), CORS limited to `ALLOWED_ORIGINS`, rate-limited login and sign-up
+- Argon2id password hashes; HMAC-signed session cookies (httpOnly, SameSite=Lax, Secure in production) carrying a session version, so logout, password change and account deletion revoke every device
+- CSRF guard (`X-Requested-With: branchwise` on every write), CORS limited to `ALLOWED_ORIGINS`, rate limits stored in the shared database so all instances count together
 - Every brand, store and shortlist route is scoped to the signed-in user; account deletion removes everything
-- SQLite by default (`data/app.db`); set `DATABASE_URL` to Postgres for production
+- Storage: SQLite for local work (`STORAGE=sqlite`, `data/app_v2.db`), Firestore in production (`STORAGE=firestore`)
+
+## Built to scale for free
+
+- The server sends each category's raw signals once (`/api/signals/{vertical}`, ~180 KB gzipped, cached a day). The browser scores all 10,765 zones for the brand in ~20 ms, so the map, Top picks and AI what-ifs cost the server nothing per user.
+- Server instances are stateless: sessions are signed cookies, data and rate limits live in Firestore, so Cloud Run can add instances under load and scale to zero when idle.
+- Basemap tiles come from OpenFreeMap (free, no key, no usage cap).
 
 ## Assistant
 

@@ -5,10 +5,11 @@ import { MapboxOverlay, type MapboxOverlayProps } from "@deck.gl/mapbox";
 import { api, priParam, type HexResult, type Pin } from "../lib/api";
 import { useWorkspace } from "../lib/store";
 import { useSession } from "../lib/session";
+import { heatmap as localHeatmap } from "../lib/localScoring";
 import { scoreColor, scoreHex, scoreLabel } from "../lib/colors";
 
 const INITIAL_VIEW = { latitude: -33.875, longitude: 151.16, zoom: 11.3, pitch: 0, bearing: 0 };
-const BASEMAP = "https://basemaps.cartocdn.com/gl/positron-gl-style/style.json";
+const BASEMAP = "https://tiles.openfreemap.org/styles/positron";
 
 /**
  * deck.gl overlay as a map control, drawn on its own canvas over the map.
@@ -60,12 +61,12 @@ export function MapView({ onOpenSite }: { onOpenSite: (h3: string, lat: number, 
 
   const loadHeatmap = useCallback(() => {
     set({ loadingHeatmap: true, heatmapError: null });
-    api
-      .heatmap(pri)
-      .then((d) => set({ hexes: d.hexes }))
+    if (!brand) return;
+    localHeatmap(brand, scenario?.priorities)
+      .then((hexes) => set({ hexes }))
       .catch((e) => set({ hexes: [], heatmapError: (e as Error).message }))
       .finally(() => set({ loadingHeatmap: false }));
-  }, [set, pri]);
+  }, [set, brand, scenario?.priorities]);
 
   // Reload whenever the profile (or the assistant's what-if) that drives scoring changes
   const profileKey = brand ? JSON.stringify([brand.vertical, brand.priorities, brand.stores.length, pri]) : "";

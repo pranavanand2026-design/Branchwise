@@ -27,8 +27,17 @@ def client() -> TestClient:
 
 
 def signup(c: TestClient, email: str) -> None:
-    from backend.app.security import limiter
-    limiter._hits.clear()  # the suite creates more accounts than the hourly sign-up limit
+    from backend.app import security
+    repo = security.get_repo()
+    if hasattr(repo, "Session"):  # the suite creates more accounts than the hourly sign-up limit
+        from sqlalchemy import delete
+        from backend.app.repo.sql_repo import CounterRow
+        with repo.Session() as s:
+            s.execute(delete(CounterRow))
+            s.commit()
+    else:
+        for k in [k for k in repo.db.store if k.startswith("counters/")]:
+            del repo.db.store[k]
     r = c.post("/api/auth/signup", json={"email": email, "password": PW}, headers=H)
     assert r.status_code == 201, r.text
 

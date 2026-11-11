@@ -5,6 +5,7 @@ import { scoreFill, scoreHex, scoreLabel } from "../lib/colors";
 import { useSession } from "../lib/session";
 import { useWorkspace } from "../lib/store";
 import { Spinner } from "./ui";
+import { topPicks } from "../lib/localScoring";
 
 /** The score on a small hex, filled in the map's colour for that score. */
 export function ScoreBadge({ score, size = "md" }: { score: number; size?: "md" | "lg" }) {
@@ -24,6 +25,7 @@ export function ScoreBadge({ score, size = "md" }: { score: number; size?: "md" 
 
 export function SitePanel({ onOpenSite }: { onOpenSite: (h3: string, lat: number, lng: number) => void }) {
   const brand = useSession((s) => s.brand)!;
+  const meta = useSession((s) => s.meta);
   const { ranked, loadingRanked, rankedRegions, scenario, set } = useWorkspace();
   const [err, setErr] = useState<string | null>(null);
 
@@ -34,9 +36,8 @@ export function SitePanel({ onOpenSite }: { onOpenSite: (h3: string, lat: number
   useEffect(() => {
     set({ loadingRanked: true });
     setErr(null);
-    api
-      .rankings(10, activeRegions, pri)
-      .then((d) => set({ ranked: d.sites }))
+    topPicks(brand, scenario?.priorities, activeRegions, meta?.regions ?? [], 10)
+      .then((sites) => set({ ranked: sites }))
       .catch((e) => setErr((e as Error).message))
       .finally(() => set({ loadingRanked: false }));
   }, [key]); // eslint-disable-line react-hooks/exhaustive-deps

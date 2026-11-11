@@ -30,3 +30,10 @@ data/dataset.json
 shots/
 data/dataset*.json
 data/prepare.log
+data/signals/
+
+# local accounts database and dev session key
+data/*.db
+data/*.db-shm
+data/*.db-wal
+data/.secret_key

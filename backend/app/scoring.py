@@ -23,7 +23,9 @@ from __future__ import annotations
 import math
 import threading
 from collections import OrderedDict
-from dataclasses import dataclass, field, replace
+from dataclasses import asdict, dataclass, field, replace
+import json
+from pathlib import Path
 
 import h3
 
@@ -227,6 +229,32 @@ _signals_cache: dict[str, list[HexSignals]] = {}
 _signals_lock = threading.Lock()
 
 
+SIGNALS_DIR = Path(__file__).resolve().parents[2] / "data" / "signals"
+
+
+def _prebuilt_path(vertical_key: str) -> Path:
+    return SIGNALS_DIR / f"{vertical_key}.json"
+
+
+def _load_prebuilt(vertical_key: str) -> list[HexSignals] | None:
+    """Signals saved at build time (scripts/build_signals.py) so a new instance starts instantly."""
+    path = _prebuilt_path(vertical_key)
+    from .db import DATA_PARQUET
+
+    if not path.exists() or (DATA_PARQUET.exists() and path.stat().st_mtime < DATA_PARQUET.stat().st_mtime):
+        return None
+    rows = json.loads(path.read_text())
+    return [HexSignals(**r) for r in rows]
+
+
+def save_prebuilt(vertical_key: str) -> Path:
+    SIGNALS_DIR.mkdir(parents=True, exist_ok=True)
+    rows = [asdict(s) for s in _compute_vertical_signals(vertical_key)]
+    path = _prebuilt_path(vertical_key)
+    path.write_text(json.dumps(rows, separators=(",", ":")))
+    return path
+
+
 def vertical_signals(vertical_key: str) -> list[HexSignals]:
     get_vertical(vertical_key)  # raises KeyError for unknown verticals
     hit = _signals_cache.get(vertical_key)
@@ -235,7 +263,7 @@ def vertical_signals(vertical_key: str) -> list[HexSignals]:
     with _signals_lock:
         hit = _signals_cache.get(vertical_key)
         if hit is None:
-            hit = _compute_vertical_signals(vertical_key)
+            hit = _load_prebuilt(vertical_key) or _compute_vertical_signals(vertical_key)
             _signals_cache[vertical_key] = hit
     return hit
 
@@ -305,12 +333,12 @@ def _compute_vertical_signals(vertical_key: str) -> list[HexSignals]:
     """
     rows = con.execute(sql).fetchall()
     return [
-        HexSignals(
-            h3_id=r[0], lat=float(r[1]), lng=float(r[2]),
+        HexSignals(  # rounded exactly as /api/signals publishes them, so browser and server agree
+            h3_id=r[0], lat=round(float(r[1]), 6), lng=round(float(r[2]), 6),
             locality=r[3], region=r[4], postcode=r[5],
             n_competitors=int(r[6]), n_complementary=int(r[7]), n_retail=int(r[8]),
-            d_anchor_m=float(r[9]) if r[9] is not None else None,
-            d_transit_m=float(r[10]) if r[10] is not None else None,
+            d_anchor_m=round(float(r[9]), 1) if r[9] is not None else None,
+            d_transit_m=round(float(r[10]), 1) if r[10] is not None else None,
             anchor_name=r[11], transit_name=r[12],
         )
         for r in rows
