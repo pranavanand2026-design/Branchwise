@@ -6,6 +6,7 @@ from __future__ import annotations
 import hashlib
 import os
 import time
+from datetime import datetime, timezone
 from dataclasses import asdict
 
 from . import BrandRec, EmailTaken, SavedRec, UserRec, new_id, utcnow
@@ -137,7 +138,9 @@ class FirestoreRepo:
         if count >= limit:
             return False
         # not a transaction: a few extra requests can slip through under a race, which is fine for limits
-        ref.set({"window": window, "count": count + 1, "expires": time.time() + window_s * 2})
+        # `expires` is a timestamp so a Firestore TTL policy on counters.expires deletes stale counters
+        ref.set({"window": window, "count": count + 1,
+                 "expires": datetime.fromtimestamp(time.time() + window_s * 2, tz=timezone.utc)})
         return True
 
     def reset_counter(self, key: str) -> None:

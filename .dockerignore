@@ -1,0 +1,22 @@
+# What `gcloud run deploy --source` uploads (replaces .gitignore for gcloud).
+# Secrets and local state never leave this machine.
+.env
+.env.*
+!.env.example
+.git/
+.venv/
+**/node_modules/
+**/__pycache__/
+*.pyc
+.DS_Store
+frontend/dist/
+data/raw/
+data/signals/
+data/*.db
+data/*.db-*
+data/.secret_key
+data/sydney_pois.synthetic.parquet
+data/prepare.log
+shots/
+.taste-skill/
+.claude/

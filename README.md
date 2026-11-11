@@ -77,3 +77,17 @@ Scoring parity: `.venv/bin/python scripts/check_scoring_parity.py` checks the br
 ## Assistant
 
 The Assistant tab talks to a Groq-hosted model (`GROQ_API_KEY` in `.env`) that can only act through tools on the same scoring engine: re-weight priorities, limit areas, rank areas, look up places, report on a suburb and save to the shortlist. Re-weighting is a what-if shown on the map until you save it. Without a key, or when the free quota runs out, a keyword-based fallback answers instead. Scores, reasons and summaries are always computed by the engine, never written by the model.
+
+## Deploy (Google Cloud Run)
+
+Live: https://branchwise-564404959706.australia-southeast1.run.app (project `branchwise-514403`, Sydney).
+
+```bash
+deploy/cloudrun.sh
+```
+
+Builds the `Dockerfile` on Cloud Build (no local Docker needed) and deploys with 0–3 instances, 1 vCPU / 1 GiB.
+One-time setup in the project: Firestore `(default)` database in `australia-southeast1` (free tier, TTL on
+`counters.expires`), service account `branchwise-run` (`roles/datastore.user`), secrets `branchwise-secret-key`
+and `branchwise-groq-key`, `roles/run.builder` on the default compute account, and an A$2 budget alert.
+`.gcloudignore` keeps `.env`, local databases and the dev session key out of the upload.
