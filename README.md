@@ -1,6 +1,6 @@
 # Branchwise
 
-**Live demo:** [branchwise-564404959706.australia-southeast1.run.app](https://branchwise-564404959706.australia-southeast1.run.app)
+ [Open your next store with Branchwise](https://branchwise-564404959706.australia-southeast1.run.app)
 
 A site selection tool for food and drink brands in Sydney. A business describes its brand and what matters to it, and Branchwise ranks every neighbourhood in the city as a place to open its next store, explains each ranking in plain English, and lets you ask an AI assistant to rethink the shortlist.
 
