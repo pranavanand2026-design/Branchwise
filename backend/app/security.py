@@ -30,7 +30,8 @@ from fastapi import Depends, HTTPException, Request, Response, status
 from .repo import Repo, UserRec, get_repo
 from .settings import settings
 
-SESSION_COOKIE = "bw_session"
+# Firebase Hosting forwards only a cookie with this exact name to Cloud Run
+SESSION_COOKIE = "__session"
 CSRF_HEADER = "x-requested-with"
 CSRF_VALUE = "branchwise"
 
