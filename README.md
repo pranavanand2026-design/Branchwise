@@ -7,33 +7,21 @@ Branchwise ranks every Sydney neighbourhood for a food and drink brand's next st
 ## Architecture
 
 ```mermaid
-flowchart LR
-    subgraph web["Browser"]
-        UI["React app<br/>map, top picks, shortlist"]
-        Score["In-browser scoring<br/>10,765 zones in ~20 ms"]
-    end
-
-    subgraph run["Cloud Run"]
-        API["FastAPI<br/>auth, brand, shortlist, signals"]
-        AI["Branchwise AI<br/>tool-calling agent"]
-    end
-
-    subgraph data["Data"]
-        POI[("Foursquare OS Places<br/>DuckDB + H3")]
-        FS[("Firestore<br/>accounts, shortlists, rate limits")]
-    end
-
+flowchart TB
+    UI["Browser · React + MapLibre<br/>map, top picks, shortlist, in-browser scoring"]
+    API["Cloud Run · FastAPI<br/>auth, brand profiles, signals, rate limits"]
+    AI["Branchwise AI<br/>tool-calling agent"]
+    POI[("Foursquare OS Places<br/>DuckDB + H3 zones")]
+    FS[("Firestore<br/>accounts, shortlists")]
     Groq["Groq LLM"]
     Tiles["OpenFreeMap tiles"]
 
-    UI --> Score
-    UI -- "signals, once a day" --> API
-    UI -- chat --> AI
+    UI --> API
     UI --> Tiles
+    API --> AI
+    AI --> Groq
     API --> POI
     API --> FS
-    AI --> API
-    AI --> Groq
 ```
 
 ## Run locally
