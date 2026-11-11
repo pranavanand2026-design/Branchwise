@@ -27,12 +27,11 @@ Branchwise gives those businesses the same kind of evidence. It scores **10,765 
 ## System Architecture
 
 ```mermaid
-flowchart LR
+flowchart TB
     User([Business owner])
 
-    subgraph Browser
-        FE[React app]
-        SC[In-browser scoring]
+    subgraph web["Browser"]
+        FE[React app + in-browser scoring]
     end
 
     subgraph GCR["Google Cloud Run"]
@@ -40,16 +39,14 @@ flowchart LR
         AI[Branchwise AI agent]
     end
 
-    subgraph Data
+    subgraph data["Data"]
         POI[(Foursquare places<br/>DuckDB + H3)]
         FS[(Firestore)]
     end
 
     User --> FE
-    FE --> SC
     FE -->|REST| API
     API --> AI
-    AI -->|tools| API
     AI --> Groq[Groq LLM]
     API --> POI
     API --> FS
@@ -117,8 +114,8 @@ Priorities map to multipliers of 0, 1, 2, 3.5 and 5, normalised to weights that 
 ### Data
 
 ```bash
-git clone https://github.com/pranavanand2026-design/GapMap.git
-cd GapMap
+git clone https://github.com/pranavanand2026-design/Branchwise.git
+cd Branchwise
 uv venv --python 3.12 .venv && uv pip install --python .venv/bin/python -r requirements.txt
 cp .env.example .env                              # add HF_TOKEN and GROQ_API_KEY
 .venv/bin/python scripts/prepare_sydney.py        # downloads and filters Sydney places
@@ -155,7 +152,7 @@ It scales to zero when idle, so the first request after a quiet spell takes a co
 ## Project Structure
 
 ```
-GapMap/
+Branchwise/
 ├── Dockerfile                  # One container: built frontend + API (Cloud Run)
 ├── requirements.txt
 ├── config/categories.json      # Verticals, Foursquare category matching, regions
