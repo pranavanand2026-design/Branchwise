@@ -30,10 +30,30 @@ OUT_PARQUET = DATA_DIR / "sydney_pois.parquet"
 SYD_LAT_MIN, SYD_LAT_MAX = -34.10, -33.60
 SYD_LNG_MIN, SYD_LNG_MAX = 150.80, 151.35
 
-FSQ_PLACES_GLOB = (
-    "hf://datasets/foursquare/fsq-os-places/release/dt=2026-01-12/"
-    "places/parquet/places-*.zstd.parquet"
-)
+FSQ_RELEASE = os.environ.get("FSQ_RELEASE", "2026-10-15")
+FSQ_BASE = f"hf://datasets/foursquare/fsq-os-places/release/dt={FSQ_RELEASE}"
+FSQ_PLACES_GLOB = f"{FSQ_BASE}/places/parquet/*.parquet"
+# Keep places refreshed within this many days (Foursquare's "recently active" filter)
+FSQ_MAX_AGE_DAYS = int(os.environ.get("FSQ_MAX_AGE_DAYS", "1095"))
+
+# Non-commercial categories from Foursquare's guide: events, roads, admin areas, vehicles...
+NON_COMMERCIAL_CATEGORY_IDS = [
+    "4bf58dd8d48988d1f0931735", "62d587aeda6648532de2b88c", "4bf58dd8d48988d12b951735",
+    "52f2ab2ebcbc57f1066b8b3b", "50aa9e094b90af0d42d5de0d", "5267e4d9e4b0ec79466e48c6",
+    "5267e4d9e4b0ec79466e48c9", "530e33ccbcbc57f1066bbff7", "5345731ebcbc57f1066c39b2",
+    "63be6904847c3692a84b9bb7", "4d4b7105d754a06373d81259", "5267e4d9e4b0ec79466e48c7",
+    "4bf58dd8d48988d132951735", "52f2ab2ebcbc57f1066b8b4c", "50aaa4314b90af0d42d5de10",
+    "58daa1558bbb0b01f18ec1fa", "63be6904847c3692a84b9bb8", "4f2a23984b9023bd5841ed2c",
+    "5267e4d9e4b0ec79466e48d1", "4f2a25ac4b909258e854f55f", "5267e4d9e4b0ec79466e48c8",
+    "52741d85e4b0d5d1e3c6a6d9", "4bf58dd8d48988d1f7931735", "4f4531504b9074f6e4fb0102",
+    "4cae28ecbf23941eb1190695", "4bf58dd8d48988d1f9931735", "5bae9231bedf3950379f89c5",
+    "530e33ccbcbc57f1066bbff8", "530e33ccbcbc57f1066bbfe4", "52f2ab2ebcbc57f1066b8b54",
+    "5267e4d8e4b0ec79466e48c5", "53e0feef498e5aac066fd8a9", "4bf58dd8d48988d130951735",
+    "530e33ccbcbc57f1066bbff3", "5bae9231bedf3950379f89c3", "4bf58dd8d48988d12a951735",
+    "52e81612bcbc57f1066b7a24", "530e33ccbcbc57f1066bbff9",
+]
+# unresolved_flags that mean the place is gone or not real
+BAD_FLAGS = ["closed", "delete", "doesnt_exist", "duplicate", "privatevenue", "inappropriate"]
 
 
 def install_h3_extension(con: duckdb.DuckDBPyConnection) -> bool:
@@ -60,46 +80,50 @@ def brand_slug_expr(col: str = "name") -> str:
     )
 
 
-def download_real_data(hf_token: str) -> None:
+def download_real_data(hf_token: str | None) -> None:
     con = duckdb.connect()
     con.execute("INSTALL httpfs; LOAD httpfs;")
-    safe_token = hf_token.replace("'", "''")
-    con.execute(f"CREATE OR REPLACE SECRET (TYPE huggingface, TOKEN '{safe_token}')")
+    if hf_token:
+        safe_token = hf_token.replace("'", "''")
+        con.execute(f"CREATE OR REPLACE SECRET hf (TYPE huggingface, TOKEN '{safe_token}')")
+    else:
+        # use the token saved by `huggingface-cli login` (~/.cache/huggingface/token)
+        con.execute("CREATE OR REPLACE SECRET hf (TYPE huggingface, PROVIDER credential_chain)")
     has_h3 = install_h3_extension(con)
 
-    print(f"[fsq] scanning parquet and filtering to Sydney bbox...")
-    # Filter to Sydney bbox + open places only (date_closed IS NULL)
-    h3_col = "h3_string_to_h3(h3_latlng_to_cell_string(latitude, longitude, 9))" if has_h3 else "NULL"
-    con.execute(
+    non_commercial = "[" + ", ".join(f"'{c}'" for c in NON_COMMERCIAL_CATEGORY_IDS) + "]"
+    bad_flags = "[" + ", ".join(f"'{f}'" for f in BAD_FLAGS) + "]"
+    cached = DATA_DIR / "raw" / f"sydney_{FSQ_RELEASE}.parquet"
+    if cached.exists():
+        print(f"[fsq] using saved extract {cached}")
+        con.execute(f"CREATE TABLE syd AS SELECT * FROM read_parquet('{cached}')")
+    else:
+      print(f"[fsq] release {FSQ_RELEASE}: scanning for open, commercial places in the Sydney bbox...")
+      con.execute(
         f"""
         CREATE TABLE syd AS
         SELECT
-            fsq_place_id,
-            name,
-            latitude,
-            longitude,
-            address,
-            locality,
-            region,
-            postcode,
-            country,
-            date_refreshed,
-            date_closed,
-            fsq_category_labels,
-            fsq_category_ids,
-            website,
-            tel,
+            fsq_place_id, name, latitude, longitude, address, locality, region, postcode,
+            country, date_refreshed, date_closed, fsq_category_labels, fsq_category_ids,
+            website, tel,
             {brand_slug_expr()} AS brand_slug
-        FROM '{FSQ_PLACES_GLOB}'
-        WHERE country = 'AU'
-          AND latitude  BETWEEN {SYD_LAT_MIN} AND {SYD_LAT_MAX}
-          AND longitude BETWEEN {SYD_LNG_MIN} AND {SYD_LNG_MAX}
+        FROM read_parquet('{FSQ_PLACES_GLOB}')
+        WHERE bbox.xmin >= {SYD_LNG_MIN} AND bbox.xmax <= {SYD_LNG_MAX}
+          AND bbox.ymin >= {SYD_LAT_MIN} AND bbox.ymax <= {SYD_LAT_MAX}
+          AND country = 'AU'
           AND date_closed IS NULL
+          AND TRY_CAST(date_refreshed AS DATE) >= current_date - INTERVAL {FSQ_MAX_AGE_DAYS} DAY
+          AND fsq_category_ids IS NOT NULL
+          AND NOT list_has_any(fsq_category_ids, {non_commercial})
+          AND NOT list_has_any(COALESCE(unresolved_flags, []), {bad_flags})
         """
     )
 
     n = con.execute("SELECT COUNT(*) FROM syd").fetchone()[0]
     print(f"[fsq] filtered to {n:,} open Sydney POIs")
+    raw = DATA_DIR / "raw"
+    raw.mkdir(exist_ok=True)
+    con.execute(f"COPY syd TO '{raw / ('sydney_' + FSQ_RELEASE + '.parquet')}' (FORMAT PARQUET)")
 
     # Compute H3 cell in Python if DuckDB ext unavailable
     if not has_h3:
@@ -126,7 +150,7 @@ def download_real_data(hf_token: str) -> None:
         ALTER TABLE syd ADD COLUMN primary_category VARCHAR;
         UPDATE syd SET primary_category =
             CASE WHEN length(fsq_category_labels) > 0
-                 THEN list_transform(fsq_category_labels, x -> split_part(x, '>', -1))[1]
+                 THEN list_transform(fsq_category_labels, lambda x: trim(split_part(x, '>', -1)))[1]
                  ELSE NULL END
         """
     )
@@ -373,7 +397,7 @@ def write_metadata(source: str) -> None:
     hexes = con.execute(f"SELECT COUNT(DISTINCT h3_9) FROM '{OUT_PARQUET}'").fetchone()[0]
     meta = {
         "source": source,  # "foursquare" | "synthetic"
-        "release": FSQ_PLACES_GLOB.split("dt=")[1].split("/")[0] if source == "foursquare" else None,
+        "release": FSQ_RELEASE if source == "foursquare" else None,
         "poi_count": int(rows),
         "hex_count": int(hexes),
         "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
@@ -393,9 +417,10 @@ def main() -> None:
 
     force_synthetic = "--synthetic" in sys.argv
     hf_token = "" if force_synthetic else os.environ.get("HF_TOKEN", "").strip()
-    if hf_token:
-        print("[mode] HF_TOKEN found — downloading real FSQ Sydney subset")
-        download_real_data(hf_token)
+    cached_login = (Path.home() / ".cache" / "huggingface" / "token").exists()
+    if not force_synthetic and (hf_token or cached_login):
+        print("[mode] Hugging Face access found — downloading the real FSQ Sydney subset")
+        download_real_data(hf_token or None)
         source = "foursquare"
     else:
         print("[mode] No HF_TOKEN — generating synthetic demo dataset")

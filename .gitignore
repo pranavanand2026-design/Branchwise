@@ -28,3 +28,18 @@ data/app.db-*
 data/dataset.json
 .taste-skill/
 shots/
+data/dataset*.json
+data/prepare.log
+data/signals/
+
+# local accounts database and dev session key
+data/*.db
+data/*.db-shm
+data/*.db-wal
+data/.secret_key
+
+# internal notes (kept locally, not published)
+CLAUDE.md
+PLAN.md
+dataset_overview.md
+*.tsbuildinfo

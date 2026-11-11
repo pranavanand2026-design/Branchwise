@@ -1,340 +1,241 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Map, { Marker, type MapRef, useControl } from "react-map-gl/maplibre";
-import { ScatterplotLayer } from "@deck.gl/layers";
 import { H3HexagonLayer } from "@deck.gl/geo-layers";
 import { MapboxOverlay, type MapboxOverlayProps } from "@deck.gl/mapbox";
-import { api } from "../lib/api";
-import { useStore } from "../lib/store";
-import { scoreColor } from "../lib/colors";
-import type { HexResult, Pin } from "../lib/api";
+import { api, priParam, type HexResult, type Pin } from "../lib/api";
+import { useWorkspace } from "../lib/store";
+import { useSession } from "../lib/session";
+import { heatmap as localHeatmap } from "../lib/localScoring";
+import { scoreColor, scoreHex, scoreLabel } from "../lib/colors";
 
-const INITIAL_VIEW = {
-  latitude:  -33.868,
-  longitude: 151.209,
-  zoom: 12,
-  pitch: 30,
-  bearing: 0,
-};
+const INITIAL_VIEW = { latitude: -33.875, longitude: 151.16, zoom: 11.3, pitch: 0, bearing: 0 };
+const BASEMAP = "https://tiles.openfreemap.org/styles/positron";
 
-const BASEMAP = "https://basemaps.cartocdn.com/gl/positron-gl-style/style.json";
-
+/**
+ * deck.gl overlay as a map control, drawn on its own canvas over the map.
+ * - A fresh MapboxOverlay is made on every add: React StrictMode adds, removes and
+ *   re-adds controls in development, and a removed overlay keeps a finalised Deck.
+ * - Position "top-left": the overlay's container is absolutely placed at 0,0 inside
+ *   that control corner; in any other corner it lands off the map.
+ * - Not interleaved, so hexes draw even while the basemap style is still loading.
+ */
 function DeckGLOverlay(props: MapboxOverlayProps) {
-  const overlay = useControl<MapboxOverlay>(() => new MapboxOverlay(props));
-  overlay.setProps(props);
+  const overlayRef = useRef<MapboxOverlay | null>(null);
+  const propsRef = useRef(props);
+  propsRef.current = props;
+  useControl(
+    () => ({
+      onAdd(map) {
+        overlayRef.current = new MapboxOverlay({ ...propsRef.current, interleaved: false });
+        return overlayRef.current.onAdd(map as never);
+      },
+      onRemove() {
+        overlayRef.current?.onRemove();
+        overlayRef.current = null;
+      },
+    }),
+    { position: "top-left" }
+  );
+  overlayRef.current?.setProps(props);
   return null;
 }
 
+function esc(s: string): string {
+  return s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]!));
+}
 
-export function MapView() {
+export function MapView({ onOpenSite }: { onOpenSite: (h3: string, lat: number, lng: number) => void }) {
   const mapRef = useRef<MapRef>(null);
-  const [viewState, setViewState] = useState(INITIAL_VIEW);
   const [pins, setPins] = useState<Pin[]>([]);
-
+  const brand = useSession((s) => s.brand);
   const {
-    vertical, brandSlug,
-    hexes, setHexes, setLoadingHeatmap, loadingHeatmap,
-    heatmapError, setHeatmapError,
-    layers,
-    selectedHex, setSelectedHex, setLoadingReport,
-    pinned,
-    flyTo,
-    scenario, setScenario,
-  } = useStore();
+    hexes, loadingHeatmap, heatmapError, layers, selectedHex, hoveredHex, ranked, compareIds, flyTo, set,
+    scenario, places,
+  } = useWorkspace();
+  const pri = priParam(scenario?.priorities);
 
-  // top-scoring hex — shown with a pulse marker for the "wow moment"
-  const topHex = useMemo(() => {
-    if (!hexes.length) return null;
-    return hexes.reduce((a, b) => (b.score > a.score ? b : a));
-  }, [hexes]);
-
-  // pulse phase for the top-hex ring
-  const [pulse, setPulse] = useState(0);
-  useEffect(() => {
-    let raf = 0;
-    const loop = () => {
-      setPulse((p) => (p + 0.02) % 1);
-      raf = requestAnimationFrame(loop);
-    };
-    raf = requestAnimationFrame(loop);
-    return () => cancelAnimationFrame(raf);
-  }, []);
-
-  // consume imperative flyTo requests (from chat, pinned-click, etc.)
   useEffect(() => {
     if (!flyTo) return;
-    mapRef.current?.flyTo({
-      center: [flyTo.lng, flyTo.lat],
-      zoom: flyTo.zoom,
-      pitch: 40,
-      duration: 1400,
-    });
-  }, [flyTo?.tick]);
+    mapRef.current?.flyTo({ center: [flyTo.lng, flyTo.lat], zoom: flyTo.zoom, duration: 1100, essential: true });
+  }, [flyTo?.tick]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // load heatmap on vertical / brand / scenario change
+  const loadHeatmap = useCallback(() => {
+    set({ loadingHeatmap: true, heatmapError: null });
+    if (!brand) return;
+    localHeatmap(brand, scenario?.priorities)
+      .then((hexes) => set({ hexes }))
+      .catch((e) => set({ hexes: [], heatmapError: (e as Error).message }))
+      .finally(() => set({ loadingHeatmap: false }));
+  }, [set, brand, scenario?.priorities]);
+
+  // Reload whenever the profile (or the assistant's what-if) that drives scoring changes
+  const profileKey = brand ? JSON.stringify([brand.vertical, brand.priorities, brand.stores.length, pri]) : "";
   useEffect(() => {
-    setLoadingHeatmap(true);
-    setHeatmapError(null);
-    api
-      .heatmap(vertical, brandSlug || undefined, undefined, scenario?.weights)
-      .then((d) => setHexes(d.hexes))
-      .catch((e) => {
-        setHexes([]);
-        setHeatmapError(e?.message ?? "Failed to load heatmap");
-      })
-      .finally(() => setLoadingHeatmap(false));
-  }, [vertical, brandSlug, scenario?.weights]);
+    if (brand) loadHeatmap();
+  }, [profileKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // load pins on map move
   const loadPins = useCallback(() => {
     const map = mapRef.current;
     if (!map) return;
+    if (map.getZoom() < 12.5) return setPins([]); // too many to be useful when zoomed out
     const b = map.getBounds();
     api
-      .pins(vertical, {
-        min_lat: b.getSouth(),
-        max_lat: b.getNorth(),
-        min_lng: b.getWest(),
-        max_lng: b.getEast(),
-      }, brandSlug || undefined)
-      .then((d) => setPins(d.pins));
-  }, [vertical, brandSlug]);
+      .pins({ min_lat: b.getSouth(), max_lat: b.getNorth(), min_lng: b.getWest(), max_lng: b.getEast() })
+      .then((d) => setPins(d.pins))
+      .catch(() => setPins([]));
+  }, []);
 
-  useEffect(() => { loadPins(); }, [loadPins]);
+  useEffect(() => {
+    loadPins();
+  }, [profileKey, loadPins]);
 
-  async function handleHexClick(hex: HexResult) {
-    // Don't null selectedHex — let existing report stay visible while we fetch,
-    // so switching hexes is a content swap instead of a panel remount + skeleton.
-    setLoadingReport(true);
-    try {
-      const r = await api.report(vertical, hex.h3_id, brandSlug || undefined);
-      setSelectedHex(r);
-    } finally {
-      setLoadingReport(false);
-    }
-  }
-
-
+  const topTen = useMemo(() => ranked.slice(0, 10), [ranked]);
+  const highlight = useMemo(
+    () => [...new Set([hoveredHex, selectedHex?.h3_id, ...compareIds].filter(Boolean) as string[])],
+    [hoveredHex, selectedHex?.h3_id, compareIds]
+  );
 
   const deckLayers = [
-    // H3 opportunity heatmap
     new H3HexagonLayer<HexResult>({
       id: "hexes",
       visible: layers.opportunity,
       data: hexes,
       getHexagon: (d) => d.h3_id,
       getFillColor: (d) => scoreColor(d.score),
-      getLineColor: [255, 255, 255, 180],
-      lineWidthMinPixels: 0.5,
+      getLineColor: [255, 255, 255, 200],
+      lineWidthMinPixels: 0.6,
       filled: true,
       stroked: true,
       extruded: false,
-      pickable: layers.opportunity,
-      opacity: 0.75,
-      onClick: ({ object }) => object && handleHexClick(object),
-      updateTriggers: { getFillColor: [hexes], visible: [layers.opportunity] },
-      transitions: { getFillColor: 400 },
+      pickable: true,
+      opacity: 0.55,
+      autoHighlight: true,
+      highlightColor: [10, 10, 10, 40],
+      onClick: ({ object }) => object && onOpenSite(object.h3_id, object.lat, object.lng),
+      onHover: ({ object }) => set({ hoveredHex: object?.h3_id ?? null }),
+      updateTriggers: { getFillColor: [hexes] },
     }),
+    new H3HexagonLayer<{ h3_id: string }>({
+      id: "highlight",
+      data: highlight.map((h3_id) => ({ h3_id })),
+      getHexagon: (d) => d.h3_id,
+      filled: false,
+      stroked: true,
+      getLineColor: [10, 10, 10, 235],
+      lineWidthMinPixels: 2.5,
+      pickable: false,
+    }),
+  ];
 
-    // selected-hex outline
-    selectedHex &&
-      new H3HexagonLayer<{ h3_id: string }>({
-        id: "selected-outline",
-        data: [{ h3_id: selectedHex.h3_id }],
-        getHexagon: (d) => d.h3_id,
-        filled: false,
-        stroked: true,
-        getLineColor: [17, 24, 39, 230],
-        lineWidthMinPixels: 2,
-        pickable: false,
-      }),
-
-    // pinned markers on the map (ring + label)
-    pinned.length > 0 &&
-      new ScatterplotLayer<HexResult>({
-        id: "pinned-ring",
-        data: pinned,
-        getPosition: (d) => [d.lng, d.lat],
-        getFillColor: [255, 255, 255, 0],
-        getLineColor: [17, 24, 39, 230],
-        stroked: true,
-        filled: true,
-        lineWidthMinPixels: 2,
-        getRadius: 10,
-        radiusMinPixels: 9,
-        radiusMaxPixels: 14,
-        pickable: false,
-      }),
-
-    // top-hex pulse (two expanding rings, animated via `pulse` 0..1)
-    topHex &&
-      hexes.length > 0 &&
-      !loadingHeatmap &&
-      new ScatterplotLayer<{ lat: number; lng: number }>({
-        id: `top-pulse-a`,
-        data: [topHex],
-        getPosition: (d) => [d.lng, d.lat],
-        getRadius: 40 + pulse * 160,
-        radiusMinPixels: 10 + pulse * 32,
-        radiusMaxPixels: 60,
-        stroked: true,
-        filled: false,
-        getLineColor: [16, 185, 129, Math.round((1 - pulse) * 220)],
-        lineWidthMinPixels: 2,
-        pickable: false,
-        updateTriggers: { getRadius: pulse, getLineColor: pulse },
-      }),
-    topHex &&
-      hexes.length > 0 &&
-      !loadingHeatmap &&
-      new ScatterplotLayer<{ lat: number; lng: number }>({
-        id: `top-pulse-b`,
-        data: [topHex],
-        getPosition: (d) => [d.lng, d.lat],
-        getRadius: 40 + ((pulse + 0.5) % 1) * 160,
-        radiusMinPixels: 10 + ((pulse + 0.5) % 1) * 32,
-        radiusMaxPixels: 60,
-        stroked: true,
-        filled: false,
-        getLineColor: [16, 185, 129, Math.round((1 - ((pulse + 0.5) % 1)) * 160)],
-        lineWidthMinPixels: 1.5,
-        pickable: false,
-        updateTriggers: { getRadius: pulse, getLineColor: pulse },
-      }),
-  ].filter(Boolean);
-
-  const getTooltip = (info: any) => {
-    const object = info.object as (HexResult | Pin | null);
-    if (!object) return null;
-    if ("h3_id" in object) {
-      return {
-        html: `<div style="background:#FFFFFF;border:1px solid #E5E7EB;border-radius:8px;padding:8px 12px;font-family:Inter,sans-serif;font-size:13px;color:#111827;box-shadow:0 4px 6px -1px rgba(0,0,0,0.1)">
-          <div style="font-weight:600">${object.locality ?? "Sydney Area"}</div>
-          <div style="color:#10B981;font-size:18px;font-weight:700;margin-top:2px">${object.score}<span style="color:#9CA3AF;font-size:12px">/100</span></div>
-          <div style="color:#4B5563;font-size:11px;margin-top:4px">Click to open report</div>
-        </div>`,
-        style: { background: "transparent", border: "none", padding: "0" },
-      };
-    }
-    if ("name" in object) {
-      return {
-        html: `<div style="background:#FFFFFF;border:1px solid #E5E7EB;border-radius:8px;padding:6px 10px;font-family:Inter,sans-serif;font-size:12px;color:#111827;box-shadow:0 4px 6px -1px rgba(0,0,0,0.1)">
-          <div style="font-weight:600">${object.name}</div>
-          <div style="color:#4B5563;margin-top:2px">${object.primary_category ?? ""}</div>
-        </div>`,
-        style: { background: "transparent", border: "none", padding: "0" },
-      };
-    }
-    return null;
+  const getTooltip = ({ object, layer }: { object?: HexResult; layer?: { id: string } | null }) => {
+    if (!object || layer?.id !== "hexes") return null;
+    return {
+      html: `<div style="background:#fff;border:1px solid rgba(36,60,76,.14);border-radius:10px;padding:10px 14px;font:14px 'IBM Plex Sans',sans-serif;color:#243C4C;box-shadow:0 8px 24px rgba(36,60,76,.14);min-width:150px">
+        <div style="font-weight:500">${esc(object.locality ?? "Sydney")}</div>
+        <div style="display:flex;align-items:baseline;gap:6px;margin-top:4px">
+          <span style="font:400 28px/1 Reglo,'IBM Plex Sans',sans-serif;color:${scoreHex(object.score)}">${object.score}</span>
+          <span style="color:#516C7C;font-size:13px">/100 · ${scoreLabel(object.score)}</span>
+        </div>
+      </div>`,
+      style: { background: "transparent", border: "none", padding: "0" },
+    };
   };
 
   return (
-    <div className="relative w-full h-full">
+    <div className="relative w-full h-full" data-tour="map">
       <Map
         ref={mapRef}
         mapStyle={BASEMAP}
-        initialViewState={viewState}
-        onMove={evt => setViewState(evt.viewState as any)}
+        initialViewState={INITIAL_VIEW}
         onMoveEnd={loadPins}
-        reuseMaps
+        onLoad={loadPins}
+        minZoom={9.5}
+        maxZoom={17}
+        maxBounds={[[150.3, -34.4], [151.7, -33.3]]}
       >
-        <DeckGLOverlay
-          interleaved={true}
-          layers={deckLayers}
-          getTooltip={getTooltip}
-        />
+        <DeckGLOverlay layers={deckLayers} getTooltip={getTooltip as never} />
 
-        {/* competitor pins — small red dot, hover tooltip */}
-        {layers.competitors && pins.filter(p => p.is_competitor && !p.is_own_brand).map(p => (
-          <Marker key={p.fsq_place_id} longitude={p.longitude} latitude={p.latitude} anchor="center">
-            <div className="group relative cursor-default">
-              <div className="w-2.5 h-2.5 rounded-full bg-red-500 border-2 border-white shadow-md" />
-              <div className="absolute bottom-5 left-1/2 -translate-x-1/2 hidden group-hover:block z-30 pointer-events-none">
-                <div className="bg-white border border-gray-200 rounded-lg px-2.5 py-1.5 shadow-lg text-xs whitespace-nowrap">
-                  <div className="font-semibold text-gray-900">{p.name}</div>
-                  <div className="text-gray-500">{p.primary_category}</div>
-                </div>
-              </div>
-            </div>
-          </Marker>
-        ))}
+        {layers.competitors &&
+          pins.filter((p) => p.is_competitor).map((p) => (
+            <Marker key={p.fsq_place_id} longitude={p.longitude} latitude={p.latitude} anchor="center">
+              <span
+                className="block w-2.5 h-2.5 rounded-full bg-score-weak ring-2 ring-white shadow"
+                title={`${p.name} · competitor`}
+              />
+            </Marker>
+          ))}
 
-        {/* complementary pins — small indigo dot */}
-        {layers.complementary && pins.filter(p => p.is_complementary && !p.is_competitor).map(p => (
-          <Marker key={p.fsq_place_id} longitude={p.longitude} latitude={p.latitude} anchor="center">
-            <div className="group relative cursor-default">
-              <div className="w-2 h-2 rounded-full bg-indigo-400 border border-white shadow-sm" />
-              <div className="absolute bottom-5 left-1/2 -translate-x-1/2 hidden group-hover:block z-30 pointer-events-none">
-                <div className="bg-white border border-gray-200 rounded-lg px-2.5 py-1.5 shadow-lg text-xs whitespace-nowrap">
-                  <div className="font-semibold text-gray-900">{p.name}</div>
-                  <div className="text-gray-500">{p.primary_category}</div>
-                </div>
-              </div>
-            </div>
-          </Marker>
-        ))}
+        {layers.complementary &&
+          pins.filter((p) => (p.is_complementary || p.is_anchor) && !p.is_competitor).map((p) => (
+            <Marker key={p.fsq_place_id} longitude={p.longitude} latitude={p.latitude} anchor="center">
+              <span
+                className={`block rounded-full ring-2 ring-white shadow ${p.is_anchor ? "w-3 h-3 bg-[#243C4C]" : "w-2 h-2 bg-[#698696]"}`}
+                title={`${p.name} · ${p.is_anchor ? "anchor" : "complementary"}`}
+              />
+            </Marker>
+          ))}
 
-        {/* own-brand pins — always-visible label chip + large pin */}
-        {layers.own_brand && pins.filter(p => p.is_own_brand).map(p => (
-          <Marker key={`own-${p.fsq_place_id}`} longitude={p.longitude} latitude={p.latitude} anchor="bottom">
-            <div className="flex flex-col items-center" style={{ filter: 'drop-shadow(0 2px 6px rgba(0,0,0,0.25))' }}>
-              <div className="bg-emerald-600 text-white text-[9px] font-bold px-2 py-0.5 rounded-full border border-emerald-400 whitespace-nowrap mb-0.5 leading-snug tracking-wide">
-                {p.name.replace(/\s*[^\x00-\x7F]+/g, '').replace(/\s*-\s*.+$/, '').trim().slice(0, 18)}
-              </div>
-              <svg width="26" height="34" viewBox="0 0 26 34" fill="none">
-                <path d="M13 0C5.82 0 0 5.82 0 13c0 9.1 13 21 13 21s13-11.9 13-21C26 5.82 20.18 0 13 0z" fill="#059669"/>
-                <circle cx="13" cy="13" r="6" fill="white"/>
-                <circle cx="13" cy="13" r="3.5" fill="#059669"/>
+        {layers.own_stores &&
+          brand?.stores.map((s, i) => (
+            <Marker key={s.id ?? i} longitude={s.lng} latitude={s.lat} anchor="bottom">
+              <svg width="22" height="28" viewBox="0 0 26 34" aria-label={`${s.name} (your store)`} role="img">
+                <title>{`${s.name} · your store`}</title>
+                <path d="M13 0C5.8 0 0 5.8 0 13c0 9.1 13 21 13 21s13-11.9 13-21C26 5.8 20.2 0 13 0z" fill="#243C4C" />
+                <circle cx="13" cy="13" r="5" fill="#fff" />
               </svg>
-            </div>
+            </Marker>
+          ))}
+
+        {places.map((p) => (
+          <Marker key={`place-${p.id}`} longitude={p.lng} latitude={p.lat} anchor="center">
+            <span className="group relative block">
+              <span className="block w-3.5 h-3.5 rotate-45 rounded-[3px] bg-accent-blue ring-2 ring-white shadow" />
+              <span className="pointer-events-none absolute left-1/2 bottom-5 -translate-x-1/2 hidden group-hover:block whitespace-nowrap rounded-sm bg-white px-2.5 py-1.5 text-[13px] shadow-pop border border-bg-border">
+                <b className="font-medium">{p.name}</b>
+                <span className="text-fg-tertiary"> · {p.category ?? "Place"}{p.suburb ? `, ${p.suburb}` : ""}</span>
+              </span>
+            </span>
+          </Marker>
+        ))}
+
+        {topTen.map((s) => (
+          <Marker
+            key={`rank-${s.h3_id}`}
+            longitude={s.lng}
+            latitude={s.lat}
+            anchor="center"
+            onClick={(e) => {
+              e.originalEvent.stopPropagation();
+              onOpenSite(s.h3_id, s.lat, s.lng);
+            }}
+          >
+            <button
+              className={`relative grid place-items-center w-7 h-7 rounded-full text-[13px] font-medium tabular shadow-pop transition-transform hover:scale-110 ${
+                selectedHex?.h3_id === s.h3_id || hoveredHex === s.h3_id ? "bg-accent text-white scale-110" : "bg-white text-fg-primary"
+              }`}
+              aria-label={`Ranked site ${s.rank}: ${s.locality ?? "Sydney"}, score ${s.score}`}
+              onMouseEnter={() => set({ hoveredHex: s.h3_id })}
+              onMouseLeave={() => set({ hoveredHex: null })}
+            >
+              {s.rank === 1 && <span className="absolute inset-0 rounded-full bg-accent/40 animate-ping motion-reduce:hidden" aria-hidden="true" />}
+              <span className="relative">{s.rank}</span>
+            </button>
           </Marker>
         ))}
       </Map>
 
-      {/* loading overlay */}
       {loadingHeatmap && (
-        <div
-          className="absolute top-4 left-1/2 -translate-x-1/2 rounded-full px-5 py-2 text-xs flex items-center gap-2 z-20"
-          style={{ background: '#fff', border: '1px solid #E5E7EB', color: '#4B5563', boxShadow: '0 2px 8px rgba(0,0,0,0.06)' }}
-        >
-          <div className="w-3 h-3 border-2 border-emerald-500 border-t-transparent rounded-full animate-spin" />
-          <span className="font-medium">Scoring {hexes.length ? `${hexes.length.toLocaleString()} hexes` : 'hexes'}…</span>
+        <div className="absolute top-4 left-1/2 -translate-x-1/2 h-9 px-4 rounded-full bg-white shadow-panel border border-bg-border text-sm flex items-center gap-2 z-10" role="status">
+          <span className="w-3.5 h-3.5 border-2 border-accent border-t-transparent rounded-full animate-spin" aria-hidden="true" />
+          Finding the best areas for {brand?.name}
         </div>
       )}
-
-      {/* scenario mode badge */}
-      {scenario && (
-        <div
-          className="absolute top-4 left-1/2 -translate-x-1/2 rounded-full px-4 py-1.5 flex items-center gap-2.5 z-20"
-          style={{ background: '#EEF9F4', border: '1.5px solid #10B981', boxShadow: '0 2px 8px rgba(0,0,0,0.06)' }}
-        >
-          <span className="text-xs font-semibold text-emerald-700">Scenario: {scenario.label}</span>
-          <button
-            onClick={() => setScenario(null)}
-            className="text-emerald-500 hover:text-emerald-700 transition-colors leading-none"
-            title="Clear scenario"
-          >
-            ✕
-          </button>
-        </div>
-      )}
-
-      {/* error banner — backend offline, 500, etc. */}
       {!loadingHeatmap && heatmapError && (
-        <div
-          className="absolute top-4 left-1/2 -translate-x-1/2 rounded-full px-5 py-2 text-xs flex items-center gap-2 max-w-md z-20"
-          style={{ background: '#FEF2F2', border: '1px solid #FECACA', color: '#B91C1C', boxShadow: '0 2px 8px rgba(0,0,0,0.06)' }}
-        >
-          <span className="font-semibold">Backend unreachable.</span>
-          <span className="text-red-400 truncate">{heatmapError}</span>
-          <button
-            onClick={() => { setHeatmapError(null); setLoadingHeatmap(true); api.heatmap(vertical, brandSlug || undefined).then((d) => setHexes(d.hexes)).catch((e) => setHeatmapError(e?.message ?? "Failed")).finally(() => setLoadingHeatmap(false)); }}
-            className="ml-1 px-2.5 py-0.5 rounded-full bg-red-100 hover:bg-red-200 text-red-700 font-medium transition-colors"
-          >
-            Retry
-          </button>
+        <div className="absolute top-4 left-1/2 -translate-x-1/2 max-w-md h-10 pl-4 pr-1.5 rounded-full bg-danger-soft border border-danger/20 text-sm text-danger flex items-center gap-3 z-10" role="alert">
+          <span className="truncate">The map didn't load. {heatmapError}</span>
+          <button className="btn-sm btn bg-white text-danger hover:bg-danger/10" onClick={loadHeatmap}>Retry</button>
         </div>
       )}
-
     </div>
   );
 }

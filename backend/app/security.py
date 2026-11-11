@@ -1,34 +1,34 @@
-"""Password hashing, opaque server-side sessions, CSRF guard, rate limiting.
+"""Password hashing, signed sessions, CSRF guard, shared rate limiting.
 
-Design:
+Design (built to run on many stateless instances):
 - Passwords: Argon2id (argon2-cffi defaults), rehashed when parameters change.
-- Sessions: 32-byte random token in an httpOnly, SameSite=Lax cookie; the DB
-  stores only its SHA-256, so a leaked database cannot be replayed as cookies.
-  Sessions are revocable (logout, password change, account delete).
-- CSRF: every state-changing /api request must carry `X-Requested-With:
-  branchwise`. Browsers will not send a custom header cross-site without a
-  CORS preflight, and CORS only allows configured origins.
-- Rate limiting: in-process sliding window. Fine for one instance; swap for
-  Redis when running more than one.
+- Sessions: an HMAC-SHA256 signed cookie {uid, version, expiry}. Verifying it needs no
+  database read. Each request then loads the user once (the brand comes in the same
+  document), and the token's version must match the account's session_version, so
+  "sign out everywhere", password changes and account deletion revoke every token.
+  The cookie is httpOnly, SameSite=Lax and Secure in production.
+- CSRF: every state-changing /api request must carry `X-Requested-With: branchwise`.
+  Browsers will not send a custom header cross-site without a CORS preflight, and
+  CORS only allows configured origins.
+- Rate limiting: fixed-window counters in the shared store (Firestore or SQL), so all
+  instances count together.
 """
 
 from __future__ import annotations
 
+import base64
 import hashlib
+import hmac
+import json
 import secrets
-import threading
 import time
-from collections import defaultdict, deque
-from datetime import datetime, timedelta, timezone
 
 from argon2 import PasswordHasher
 from argon2.exceptions import InvalidHashError, VerificationError, VerifyMismatchError
 from fastapi import Depends, HTTPException, Request, Response, status
-from sqlalchemy import delete, select
-from sqlalchemy.orm import Session
 
+from .repo import Repo, UserRec, get_repo
 from .settings import settings
-from .storage import AuthSession, User, get_db, utcnow
 
 SESSION_COOKIE = "bw_session"
 CSRF_HEADER = "x-requested-with"
@@ -72,72 +72,77 @@ def password_problem(pw: str, email: str) -> str | None:
     return None
 
 
-# ─── Sessions ────────────────────────────────────────────────────────────────
+# ─── Signed sessions ─────────────────────────────────────────────────────────
 
 
-def _token_hash(token: str) -> str:
-    return hashlib.sha256(token.encode()).hexdigest()
+def _b64(b: bytes) -> str:
+    return base64.urlsafe_b64encode(b).rstrip(b"=").decode()
 
 
-def _aware(dt: datetime) -> datetime:
-    # SQLite returns naive datetimes; treat them as UTC
-    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+def _unb64(s: str) -> bytes:
+    return base64.urlsafe_b64decode(s + "=" * (-len(s) % 4))
 
 
-def create_session(db: Session, user: User, response: Response, user_agent: str | None) -> None:
-    token = secrets.token_urlsafe(32)
-    expires = utcnow() + timedelta(days=settings.session_days)
-    db.add(AuthSession(
-        user_id=user.id, token_hash=_token_hash(token), expires_at=expires,
-        user_agent=(user_agent or "")[:255],
-    ))
-    db.commit()
+def _sign(payload: bytes) -> str:
+    return _b64(hmac.new(settings.secret_key.encode(), payload, hashlib.sha256).digest())
+
+
+def make_token(user: UserRec) -> str:
+    payload = json.dumps({"u": user.id, "v": user.session_version,
+                          "e": int(time.time()) + settings.session_days * 86400}, separators=(",", ":")).encode()
+    return f"{_b64(payload)}.{_sign(payload)}"
+
+
+def read_token(token: str) -> dict | None:
+    try:
+        body, sig = token.split(".", 1)
+        payload = _unb64(body)
+    except (ValueError, TypeError):
+        return None
+    if not hmac.compare_digest(sig, _sign(payload)):
+        return None
+    try:
+        data = json.loads(payload)
+    except ValueError:
+        return None
+    if not isinstance(data, dict) or data.get("e", 0) < time.time():
+        return None
+    return data
+
+
+def set_session_cookie(response: Response, user: UserRec) -> None:
     response.set_cookie(
-        SESSION_COOKIE, token,
+        SESSION_COOKIE, make_token(user),
         max_age=settings.session_days * 86400,
         httponly=True, secure=settings.cookie_secure, samesite="lax", path="/",
     )
 
 
 def clear_session_cookie(response: Response) -> None:
-    response.delete_cookie(SESSION_COOKIE, path="/", secure=settings.cookie_secure,
-                           httponly=True, samesite="lax")
+    response.delete_cookie(SESSION_COOKIE, path="/", secure=settings.cookie_secure, httponly=True, samesite="lax")
 
 
-def revoke_session(db: Session, token: str | None) -> None:
-    if token:
-        db.execute(delete(AuthSession).where(AuthSession.token_hash == _token_hash(token)))
-        db.commit()
+def revoke_all_sessions(repo: Repo, user: UserRec) -> UserRec:
+    """Invalidate every token for this account (they carry the old version)."""
+    user.session_version += 1
+    repo.update_user(user.id, session_version=user.session_version)
+    return user
 
 
-def revoke_all_sessions(db: Session, user_id: str, keep_token: str | None = None) -> None:
-    q = delete(AuthSession).where(AuthSession.user_id == user_id)
-    if keep_token:
-        q = q.where(AuthSession.token_hash != _token_hash(keep_token))
-    db.execute(q)
-    db.commit()
-
-
-def current_user_optional(request: Request, db: Session = Depends(get_db)) -> User | None:
+def current_user_optional(request: Request, repo: Repo = Depends(get_repo)) -> UserRec | None:
     token = request.cookies.get(SESSION_COOKIE)
-    if not token or len(token) > 128:
+    if not token or len(token) > 512:
         return None
-    sess = db.scalar(select(AuthSession).where(AuthSession.token_hash == _token_hash(token)))
-    if sess is None:
+    data = read_token(token)
+    if data is None:
         return None
-    now = utcnow()
-    if _aware(sess.expires_at) <= now:
-        db.delete(sess)
-        db.commit()
+    user = repo.get_user(str(data.get("u", "")))
+    if user is None or user.session_version != data.get("v"):
         return None
-    # Touch at most once an hour to avoid a write per request
-    if now - _aware(sess.last_seen_at) > timedelta(hours=1):
-        sess.last_seen_at = now
-        db.commit()
-    return sess.user
+    return user
 
 
-def current_user(user: User | None = Depends(current_user_optional)) -> User:
+def current_user(user: UserRec | None = Depends(current_user_optional)) -> UserRec:
     if user is None:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Please log in.")
     return user
@@ -154,41 +159,21 @@ def csrf_ok(request: Request) -> bool:
     return request.headers.get(CSRF_HEADER, "").lower() == CSRF_VALUE
 
 
-# ─── Rate limiting ───────────────────────────────────────────────────────────
-
-
-class RateLimiter:
-    def __init__(self) -> None:
-        self._hits: dict[str, deque[float]] = defaultdict(deque)
-        self._lock = threading.Lock()
-
-    def hit(self, key: str, limit: int, window_s: int) -> bool:
-        """Record a hit; return False if the key is over its limit."""
-        now = time.monotonic()
-        with self._lock:
-            q = self._hits[key]
-            while q and now - q[0] > window_s:
-                q.popleft()
-            if len(q) >= limit:
-                return False
-            q.append(now)
-            if len(self._hits) > 50_000:  # crude memory guard
-                self._hits.clear()
-            return True
-
-    def reset(self, key: str) -> None:
-        with self._lock:
-            self._hits.pop(key, None)
-
-
-limiter = RateLimiter()
+# ─── Rate limiting (shared across instances) ─────────────────────────────────
 
 
 def client_ip(request: Request) -> str:
-    # Behind a proxy, configure it to set X-Forwarded-For and run uvicorn with --proxy-headers
+    # Cloud Run puts the caller first in X-Forwarded-For
+    fwd = request.headers.get("x-forwarded-for")
+    if fwd and settings.trust_proxy:
+        return fwd.split(",")[0].strip()
     return request.client.host if request.client else "unknown"
 
 
-def enforce_rate(key: str, limit: int, window_s: int) -> None:
-    if not limiter.hit(key, limit, window_s):
-        raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, "Too many attempts. Try again in a few minutes.")
+def enforce_rate(key: str, limit: int, window_s: int, message: str = "Too many attempts. Try again in a few minutes.") -> None:
+    if not get_repo().hit(key, limit, window_s):
+        raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, message)
+
+
+def reset_rate(key: str) -> None:
+    get_repo().reset_counter(key)

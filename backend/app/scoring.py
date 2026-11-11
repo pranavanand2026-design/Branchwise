@@ -23,7 +23,9 @@ from __future__ import annotations
 import math
 import threading
 from collections import OrderedDict
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field, replace
+import json
+from pathlib import Path
 
 import h3
 
@@ -75,6 +77,8 @@ class HexSignals:
     n_retail: int
     d_anchor_m: float | None
     d_transit_m: float | None
+    anchor_name: str | None = None
+    transit_name: str | None = None
 
 
 @dataclass
@@ -161,6 +165,19 @@ class _StoreGrid:
     def _key(self, lat: float, lng: float) -> tuple[int, int]:
         return (math.floor(lat / self.CELL), math.floor(lng / self.CELL))
 
+    def count_in_poi_data_within(self, lat: float, lng: float, radius_m: float) -> int:
+        """Own stores that are also POIs (picked from the dataset) within radius."""
+        if not self.cells:
+            return 0
+        ky, kx = self._key(lat, lng)
+        n = 0
+        for dy in (-1, 0, 1):
+            for dx in (-1, 0, 1):
+                for s in self.cells.get((ky + dy, kx + dx), ()):
+                    if s.fsq_place_id and haversine_m(lat, lng, s.lat, s.lng) <= radius_m:
+                        n += 1
+        return n
+
     def nearest_m(self, lat: float, lng: float) -> float | None:
         """Nearest store within ~2 km (beyond that cannibalisation is maxed anyway)."""
         if not self.cells:
@@ -212,6 +229,32 @@ _signals_cache: dict[str, list[HexSignals]] = {}
 _signals_lock = threading.Lock()
 
 
+SIGNALS_DIR = Path(__file__).resolve().parents[2] / "data" / "signals"
+
+
+def _prebuilt_path(vertical_key: str) -> Path:
+    return SIGNALS_DIR / f"{vertical_key}.json"
+
+
+def _load_prebuilt(vertical_key: str) -> list[HexSignals] | None:
+    """Signals saved at build time (scripts/build_signals.py) so a new instance starts instantly."""
+    path = _prebuilt_path(vertical_key)
+    from .db import DATA_PARQUET
+
+    if not path.exists() or (DATA_PARQUET.exists() and path.stat().st_mtime < DATA_PARQUET.stat().st_mtime):
+        return None
+    rows = json.loads(path.read_text())
+    return [HexSignals(**r) for r in rows]
+
+
+def save_prebuilt(vertical_key: str) -> Path:
+    SIGNALS_DIR.mkdir(parents=True, exist_ok=True)
+    rows = [asdict(s) for s in _compute_vertical_signals(vertical_key)]
+    path = _prebuilt_path(vertical_key)
+    path.write_text(json.dumps(rows, separators=(",", ":")))
+    return path
+
+
 def vertical_signals(vertical_key: str) -> list[HexSignals]:
     get_vertical(vertical_key)  # raises KeyError for unknown verticals
     hit = _signals_cache.get(vertical_key)
@@ -220,7 +263,7 @@ def vertical_signals(vertical_key: str) -> list[HexSignals]:
     with _signals_lock:
         hit = _signals_cache.get(vertical_key)
         if hit is None:
-            hit = _compute_vertical_signals(vertical_key)
+            hit = _load_prebuilt(vertical_key) or _compute_vertical_signals(vertical_key)
             _signals_cache[vertical_key] = hit
     return hit
 
@@ -266,22 +309,22 @@ def _compute_vertical_signals(vertical_key: str) -> list[HexSignals]:
       ) GROUP BY h3_9
     ),
     anchor AS (
-      SELECT c.h3_9, MIN({d_sql}) AS d_anchor_m
-      FROM cells c JOIN (SELECT latitude, longitude FROM tagged WHERE is_anchor) t
+      SELECT c.h3_9, MIN({d_sql}) AS d_anchor_m, ARG_MIN(t.name, {d_sql}) AS anchor_name
+      FROM cells c JOIN (SELECT latitude, longitude, name FROM tagged WHERE is_anchor) t
         ON t.latitude  BETWEEN c.lat - {anc_lat} AND c.lat + {anc_lat}
        AND t.longitude BETWEEN c.lng - {anc_lng} AND c.lng + {anc_lng}
       GROUP BY c.h3_9
     ),
     transit AS (
-      SELECT c.h3_9, MIN({d_sql}) AS d_transit_m
-      FROM cells c JOIN (SELECT latitude, longitude FROM tagged WHERE is_transit) t
+      SELECT c.h3_9, MIN({d_sql}) AS d_transit_m, ARG_MIN(t.name, {d_sql}) AS transit_name
+      FROM cells c JOIN (SELECT latitude, longitude, name FROM tagged WHERE is_transit) t
         ON t.latitude  BETWEEN c.lat - {tr_lat} AND c.lat + {tr_lat}
        AND t.longitude BETWEEN c.lng - {tr_lng} AND c.lng + {tr_lng}
       GROUP BY c.h3_9
     )
     SELECT c.h3_9, c.lat, c.lng, c.locality, c.region, c.postcode,
            COALESCE(n.n_competitors, 0), COALESCE(n.n_complementary, 0), COALESCE(n.n_retail, 0),
-           a.d_anchor_m, tr.d_transit_m
+           a.d_anchor_m, tr.d_transit_m, a.anchor_name, tr.transit_name
     FROM cells c
     LEFT JOIN near n    USING (h3_9)
     LEFT JOIN anchor a  USING (h3_9)
@@ -290,12 +333,13 @@ def _compute_vertical_signals(vertical_key: str) -> list[HexSignals]:
     """
     rows = con.execute(sql).fetchall()
     return [
-        HexSignals(
-            h3_id=r[0], lat=float(r[1]), lng=float(r[2]),
+        HexSignals(  # rounded exactly as /api/signals publishes them, so browser and server agree
+            h3_id=r[0], lat=round(float(r[1]), 6), lng=round(float(r[2]), 6),
             locality=r[3], region=r[4], postcode=r[5],
             n_competitors=int(r[6]), n_complementary=int(r[7]), n_retail=int(r[8]),
-            d_anchor_m=float(r[9]) if r[9] is not None else None,
-            d_transit_m=float(r[10]) if r[10] is not None else None,
+            d_anchor_m=round(float(r[9]), 1) if r[9] is not None else None,
+            d_transit_m=round(float(r[10]), 1) if r[10] is not None else None,
+            anchor_name=r[11], transit_name=r[12],
         )
         for r in rows
     ]
@@ -318,20 +362,29 @@ def _lerp_clamp(value: float, at_zero: float, at_hundred: float) -> float:
     return max(0.0, min(100.0, t * 100.0))
 
 
+# Smooth curves, calibrated on the 2026-10-15 Sydney release: no signal hits 100
+# until a zone is genuinely exceptional, so the best areas still separate.
+#   transit  100*e^(-d/600):  90 m -> 86, 300 m -> 61, 700 m -> 31
+#   anchor   100*e^(-d/700):  80 m -> 89, 360 m -> 60, 630 m -> 41
+#   retail   100*(1-e^(-n/20)): 12 -> 45, 25 -> 71, 60 -> 95
+#   complementary 100*(1-e^(-n/6)): 4 -> 49, 8 -> 74, 15 -> 92
+#   competitors 100*e^(-n/2.5): 0 -> 100, 1 -> 67, 3 -> 30, 8 -> 4
+CURVES = {"transit_m": 600.0, "anchor_m": 700.0, "retail_n": 20.0, "complementary_n": 6.0, "competitor_n": 2.5}
+
+
 def _components(s: HexSignals, d_cannibal: float | None) -> dict[str, int]:
     p = PARAMS
-    s_anchor = 0.0
-    if s.d_anchor_m is not None:
-        s_anchor = _lerp_clamp(s.d_anchor_m, p["anchor_zero_m"], p["anchor_full_score_m"])
-    s_comp = _lerp_clamp(s.n_complementary, 0, 10)
+    c = CURVES
+    s_anchor = 0.0 if s.d_anchor_m is None else 100 * math.exp(-s.d_anchor_m / c["anchor_m"])
+    s_comp = 100 * (1 - math.exp(-s.n_complementary / c["complementary_n"]))
     return {
-        "market_saturation": round(_lerp_clamp(s.n_competitors, p["competitor_saturation"], 0)),
+        "market_saturation": round(100 * math.exp(-s.n_competitors / c["competitor_n"])),
         "cannibalisation": 100 if d_cannibal is None
         else round(_lerp_clamp(d_cannibal, p["cannibal_zero_m"], p["cannibal_full_score_m"])),
-        "surrounding_amenities": round(s_anchor * 0.5 + s_comp * 0.5),
+        "surrounding_amenities": round(s_anchor * 0.6 + s_comp * 0.4),
         "transit_accessibility": 0 if s.d_transit_m is None
-        else round(_lerp_clamp(s.d_transit_m, p["transit_zero_m"], p["transit_full_score_m"])),
-        "demographic_match": round(_lerp_clamp(s.n_retail, 0, p["foot_traffic_saturation"])),
+        else round(100 * math.exp(-s.d_transit_m / c["transit_m"])),
+        "demographic_match": round(100 * (1 - math.exp(-s.n_retail / c["retail_n"]))),
     }
 
 
@@ -363,8 +416,14 @@ def _score_profile_impl(profile: Profile) -> list[HexScore]:
     weights = profile.weights or WEIGHTS
     wsum = sum(weights.get(k, 0.0) for k in SIGNALS) or 1.0
     out: list[HexScore] = []
+    radius = PARAMS["competitor_radius_m"]
     for s in signals:
         d_cannibal = grid.nearest_m(s.lat, s.lng)
+        # The brand's own stores sit in the same category; they are handled by
+        # cannibalisation, so don't also count them as competitors.
+        own_nearby = grid.count_in_poi_data_within(s.lat, s.lng, radius)
+        if own_nearby:
+            s = replace(s, n_competitors=max(0, s.n_competitors - own_nearby))
         comps = _components(s, d_cannibal)
         total = round(sum(comps[k] * weights.get(k, 0.0) for k in SIGNALS) / wsum)
         out.append(HexScore(
@@ -376,6 +435,8 @@ def _score_profile_impl(profile: Profile) -> list[HexScore]:
                 "n_retail": s.n_retail,
                 "d_anchor_m": s.d_anchor_m,
                 "d_transit_m": s.d_transit_m,
+                "anchor_name": s.anchor_name,
+                "transit_name": s.transit_name,
                 "d_cannibal_m": d_cannibal,
             },
         ))
@@ -415,6 +476,15 @@ def _fmt_m(m: float | None) -> str:
     return f"{round(m)} m" if m < 1000 else f"{m / 1000:.1f} km"
 
 
+def _short(name: str | None, n: int = 36) -> str | None:
+    if not name:
+        return name
+    import re
+    if re.search(r"\d{5,}", name):  # stop codes like "Bus Stop 201063" mean nothing to a reader
+        return "A bus stop" if "bus" in name.lower() else None
+    return name if len(name) <= n else name[: n - 1].rstrip(" ,-") + "…"
+
+
 def explain(h: HexScore, weights: dict[str, float]) -> dict:
     """Plain-English reasons + risks for one site, ordered by weighted impact."""
     contrib = sorted(SIGNALS, key=lambda k: h.components[k] * weights.get(k, 0), reverse=True)
@@ -424,27 +494,27 @@ def explain(h: HexScore, weights: dict[str, float]) -> dict:
         if h.components[k] < 60 or weights.get(k, 0) <= 0:
             continue
         if k == "transit_accessibility" and raw["d_transit_m"] is not None:
-            reasons.append(f"Transit stop {_fmt_m(raw['d_transit_m'])} away")
+            reasons.append(f"{_short(raw.get('transit_name')) or 'A train or bus stop'} is {_fmt_m(raw['d_transit_m'])} away")
         elif k == "surrounding_amenities" and raw["d_anchor_m"] is not None:
-            reasons.append(f"Anchor venue {_fmt_m(raw['d_anchor_m'])} away, {raw['n_complementary']} complementary venues")
+            reasons.append(f"Near {_short(raw['anchor_name'])}, {_fmt_m(raw['d_anchor_m'])} away" if raw.get("anchor_name") else f"A uni, mall, office or hospital {_fmt_m(raw['d_anchor_m'])} away")
         elif k == "demographic_match":
-            reasons.append(f"{raw['n_retail']} shops and venues within 300 m")
+            reasons.append(f"Busy street: {raw['n_retail']} shops and venues a short walk away")
         elif k == "market_saturation":
             n = raw["n_competitors"]
-            reasons.append("No direct competitors within 500 m" if n == 0 else f"Only {n} competitor{'s' if n != 1 else ''} within 500 m")
+            reasons.append("No competitors within a 6-minute walk" if n == 0 else f"Only {n} competitor{'s' if n != 1 else ''} within a 6-minute walk")
         elif k == "cannibalisation":
             d = raw["d_cannibal_m"]
             if d is not None:
-                reasons.append(f"Nearest own store {_fmt_m(d)} away")
+                reasons.append(f"Your nearest store is {_fmt_m(d)} away")
         if len(reasons) == 3:
             break
     risks: list[str] = []
     if raw["n_competitors"] >= 4:
-        risks.append(f"{raw['n_competitors']} competitors within 500 m")
+        risks.append(f"{raw['n_competitors']} competitors within a 6-minute walk")
     if raw["d_cannibal_m"] is not None and raw["d_cannibal_m"] < 800:
-        risks.append(f"Own store only {_fmt_m(raw['d_cannibal_m'])} away")
+        risks.append(f"Your own store is only {_fmt_m(raw['d_cannibal_m'])} away")
     if raw["d_transit_m"] is None or raw["d_transit_m"] > 1200:
-        risks.append("Weak public transport access")
+        risks.append("Hard to reach by train or bus")
     return {"reasons": reasons, "risks": risks}
 
 
@@ -465,9 +535,22 @@ def rank_sites(profile: Profile, limit: int = 20, region_keys: tuple[str, ...] |
             if len(picked) >= limit:
                 break
     return [
-        {**hex_to_dict(h), "rank": i + 1, **explain(h, profile.weights)}
+        {**hex_to_dict(h), "rank": i + 1, **explain(h, profile.weights), "signals": _signals_brief(h)}
         for i, h in enumerate(picked)
     ]
+
+
+def _signals_brief(h: HexScore) -> dict:
+    r = h.signals_raw
+    rnd = lambda v: round(v) if v is not None else None  # noqa: E731
+    return {
+        "competitors_500m": r["n_competitors"],
+        "complementary_300m": r["n_complementary"],
+        "shops_and_venues_300m": r["n_retail"],
+        "nearest_anchor": r.get("anchor_name"), "anchor_m": rnd(r["d_anchor_m"]),
+        "nearest_transit": r.get("transit_name"), "transit_m": rnd(r["d_transit_m"]),
+        "own_store_m": rnd(r["d_cannibal_m"]),
+    }
 
 
 def hex_to_dict(h: HexScore) -> dict:
@@ -534,7 +617,7 @@ def _site_summary(h: HexScore, competitors: list[dict], anchors: list[dict],
 
     d = raw["d_cannibal_m"]
     if d is None:
-        parts.append("- **Your network:** none of your stores within 2 km.")
+        parts.append("- **Your network:** none of your stores close by.")
     else:
         parts.append(f"- **Your network:** your nearest store is {_fmt_m(d)} away.")
 
@@ -582,7 +665,7 @@ def hex_report(profile: Profile, h3_id: str) -> dict:
         rows = con.execute(
             f"""
             WITH {tagged}
-            SELECT name, primary_category, latitude, longitude, locality, dist_m FROM (
+            SELECT name, primary_category, latitude, longitude, locality, dist_m, fsq_place_id FROM (
               SELECT *, {dist_sql} AS dist_m FROM tagged
               WHERE {flag_col}
                 AND latitude BETWEEN ? AND ? AND longitude BETWEEN ? AND ?
@@ -592,11 +675,16 @@ def hex_report(profile: Profile, h3_id: str) -> dict:
         ).fetchall()
         return [
             {"name": r[0], "primary_category": r[1], "latitude": r[2], "longitude": r[3],
-             "locality": r[4], "dist_m": round(float(r[5]))}
+             "locality": r[4], "dist_m": round(float(r[5])), "fsq_place_id": r[6]}
             for r in rows if r[5] is not None
         ]
 
-    competitors = nearest("is_competitor", 5)
+    own_ids = {st.fsq_place_id for st in profile.stores if st.fsq_place_id}
+    if own_ids:
+        competitors = [c for c in nearest("is_competitor", 5 + len(own_ids))
+                       if c["fsq_place_id"] not in own_ids][:5]
+    else:
+        competitors = nearest("is_competitor", 5)
     complementary = nearest("is_complementary", 5)
     anchors = nearest("is_anchor", 3, max_m=3000)
     transit = nearest("is_transit", 2, max_m=2000)

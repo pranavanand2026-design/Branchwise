@@ -1,117 +1,82 @@
 import { create } from "zustand";
-import type { HexResult, HexReport, Scenario, Vertical } from "./api";
+import type { AssistantPlace, ChatMsg, HexReport, HexResult, RankedSite, SavedSite, Scenario } from "./api";
 
-type Layer = "competitors" | "complementary" | "opportunity" | "own_brand";
+export type Layer = "opportunity" | "competitors" | "complementary" | "own_stores";
+export type PanelTab = "ranked" | "shortlist";
 
-type Store = {
-  verticals: Vertical[];
-  vertical: string;
-  brandSlug: string;
-
+type Workspace = {
   hexes: HexResult[];
   loadingHeatmap: boolean;
   heatmapError: string | null;
 
+  ranked: RankedSite[];
+  rankedRegions: string[] | null; // null = use the brand's saved regions
+  loadingRanked: boolean;
+
+  shortlist: SavedSite[];
+
   selectedHex: HexReport | null;
   loadingReport: boolean;
+  hoveredHex: string | null;
 
-  pinned: HexResult[];              // for compare mode
+  compareIds: string[];
   compareOpen: boolean;
 
   layers: Record<Layer, boolean>;
+  panelTab: PanelTab;
+  panelOpen: boolean;
 
-  scenario: Scenario | null;
-
-  // imperative fly-to target for the map: bumped each time, consumed by MapView
   flyTo: { lat: number; lng: number; zoom: number; tick: number } | null;
 
-  sidebarOpen: boolean;
+  /** what-if from the assistant: overrides saved priorities/areas until saved or reset */
+  scenario: Scenario | null;
+  places: AssistantPlace[];
+  chat: ChatMsg[];
+  chatBusy: boolean;
+  /** an area to open once the map view mounts (from the shortlist page) */
+  pendingOpen: string | null;
 
-  chatOpen: boolean;
-  chatHistory: { role: "user" | "assistant"; text: string; offline?: boolean }[];
-  chatLoading: boolean;
-
-  setVerticals: (v: Vertical[]) => void;
-  setVertical: (v: string) => void;
-  setBrandSlug: (s: string) => void;
-  setHexes: (h: HexResult[]) => void;
-  setLoadingHeatmap: (b: boolean) => void;
-  setHeatmapError: (e: string | null) => void;
-  setSelectedHex: (r: HexReport | null) => void;
-  setLoadingReport: (b: boolean) => void;
-  togglePin: (h: HexResult) => void;
-  clearPinned: () => void;
-  setCompareOpen: (b: boolean) => void;
+  set: (p: Partial<Workspace>) => void;
   toggleLayer: (l: Layer) => void;
-  setScenario: (s: Scenario | null) => void;
+  toggleCompare: (h3: string) => void;
   flyToLocation: (lat: number, lng: number, zoom?: number) => void;
-  setSidebarOpen: (b: boolean) => void;
-  setChatOpen: (b: boolean) => void;
-  pushChat: (
-    m: { role: "user" | "assistant"; text: string; offline?: boolean }
-  ) => void;
-  setChatLoading: (b: boolean) => void;
+  reset: () => void;
 };
 
-export const useStore = create<Store>((set) => ({
-  verticals: [],
-  vertical: "bubble_tea",
-  brandSlug: "gongcha",
-
+const initial = {
   hexes: [],
   loadingHeatmap: false,
   heatmapError: null,
-
+  ranked: [],
+  rankedRegions: null,
+  loadingRanked: false,
+  shortlist: [],
   selectedHex: null,
   loadingReport: false,
-
-  pinned: [],
+  hoveredHex: null,
+  compareIds: [],
   compareOpen: false,
-
-  layers: { competitors: true, complementary: false, opportunity: true, own_brand: true },
-
-  scenario: null,
-
+  layers: { opportunity: true, competitors: true, complementary: false, own_stores: true },
+  panelTab: "ranked" as PanelTab,
+  panelOpen: true,
   flyTo: null,
+  scenario: null as Scenario | null,
+  places: [] as AssistantPlace[],
+  chat: [] as ChatMsg[],
+  chatBusy: false,
+  pendingOpen: null as string | null,
+};
 
-  sidebarOpen: true,
-
-  chatOpen: true,
-  chatHistory: [],
-  chatLoading: false,
-
-  setVerticals: (verticals) => set({ verticals }),
-  setVertical: (vertical) =>
-    set({
-      vertical,
-      // scores are vertical-specific; stale pins/reports would mislead
-      pinned: [],
-      selectedHex: null,
-      compareOpen: false,
-      heatmapError: null,
-    }),
-  setBrandSlug: (brandSlug) => set({ brandSlug }),
-  setHexes: (hexes) => set({ hexes }),
-  setLoadingHeatmap: (loadingHeatmap) => set({ loadingHeatmap }),
-  setHeatmapError: (heatmapError) => set({ heatmapError }),
-  setSelectedHex: (selectedHex) => set({ selectedHex }),
-  setLoadingReport: (loadingReport) => set({ loadingReport }),
-  togglePin: (h) =>
+export const useWorkspace = create<Workspace>((set) => ({
+  ...initial,
+  set: (p) => set(p),
+  toggleLayer: (l) => set((s) => ({ layers: { ...s.layers, [l]: !s.layers[l] } })),
+  toggleCompare: (h3) =>
     set((s) => {
-      const exists = s.pinned.find((p) => p.h3_id === h.h3_id);
-      if (exists) return { pinned: s.pinned.filter((p) => p.h3_id !== h.h3_id) };
-      if (s.pinned.length >= 3) return { pinned: [...s.pinned.slice(1), h] };
-      return { pinned: [...s.pinned, h] };
+      if (s.compareIds.includes(h3)) return { compareIds: s.compareIds.filter((x) => x !== h3) };
+      return { compareIds: [...s.compareIds, h3].slice(-3) };
     }),
-  clearPinned: () => set({ pinned: [], compareOpen: false }),
-  setCompareOpen: (compareOpen) => set({ compareOpen }),
-  toggleLayer: (l) =>
-    set((s) => ({ layers: { ...s.layers, [l]: !s.layers[l] } })),
-  setScenario: (scenario) => set({ scenario }),
-  flyToLocation: (lat, lng, zoom = 15) =>
+  flyToLocation: (lat, lng, zoom = 14.5) =>
     set((s) => ({ flyTo: { lat, lng, zoom, tick: (s.flyTo?.tick ?? 0) + 1 } })),
-  setSidebarOpen: (sidebarOpen) => set({ sidebarOpen }),
-  setChatOpen: (chatOpen) => set({ chatOpen }),
-  pushChat: (m) => set((s) => ({ chatHistory: [...s.chatHistory, m] })),
-  setChatLoading: (chatLoading) => set({ chatLoading }),
+  reset: () => set(initial),
 }));
